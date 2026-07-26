@@ -45,16 +45,17 @@ from under an agent that is still running. Every claim records the process id
 of the claude instance it belongs to, so a session that is killed hard or
 crashes is pruned within seconds rather than after a timeout.
 
-Battery and power state are read in-process from IOKit and pushed by
-plug/unplug notifications, so the battery guard reacts to an unplug
-immediately instead of at the next poll.
-
 Sleep is handed back after **5 minutes of quiet**, not instantly. A turn ending
 is not the same as you being done, and the grace covers the gap between turns so
 a scheduled follow-up does not land on a sleeping machine.
 
 An idle session deliberately holds nothing. A session waiting at the prompt is
 finished, even though `claude` is still running.
+
+**You outrank auto mode.** Turning Keep awake off by hand while Claude is
+working pauses auto mode for the current work, and the panel says so; the next
+fresh turn re-engages it. Without this the toggle would flip itself back on
+within seconds of you switching it off.
 
 ## Install
 
@@ -70,9 +71,9 @@ First run opens a three-step setup:
 2. **Connect Claude Code.** Adds the six hooks above to
    `~/.claude/settings.json`. Your existing hooks are preserved; only entries
    mentioning `stayawake-claim` are touched, and the file is backed up first.
-3. **Launch at login.** Without this the app stops after a restart and auto mode
-   silently stops working, because the hooks keep writing claims that nobody
-   reads.
+3. **Launch at login.** Without this the app stops running after a restart and
+   auto mode silently stops working, because the hooks keep writing claims that
+   nobody reads.
 
 Every step is idempotent and re-runnable from the panel.
 
@@ -90,14 +91,26 @@ prevent, so quitting turns it back off.
 with times and reasons, so "did it actually work while I was away?" is a glance
 rather than an archaeology session in `pmset -g log`.
 
+**An honest status row.** Battery, power source and the sleep flag are read
+in-process from IOKit, the same sources the menu bar battery flyout uses, and
+plug/unplug pushes an immediate refresh. The row distinguishes on battery (with
+time left), charging (with time to full), charged, and plugged-in-but-holding.
+The "plug in or it will drain" warning appears only below twice the guard
+threshold; a warning shown at 96% is noise that teaches you to ignore it. If
+the app's own readings ever go stale, the row says so instead of showing old
+numbers.
+
 ## Settings
 
 ```sh
 defaults write cz.sebastiankucera.stayawake graceSeconds 120     # default 300
 defaults write cz.sebastiankucera.stayawake batteryThreshold 30  # default 20
+defaults write cz.sebastiankucera.stayawake debugHeartbeat -bool true
+# heartbeat: touches ~/Library/Application Support/StayAwake/heartbeat on every
+# poll, so a stalled loop is observable from outside the app
 ```
 
-## Two things worth knowing
+## Things worth knowing
 
 **While sleep is disabled, the Apple menu's Sleep item will not work either.**
 The flag is system wide, not lid specific.
@@ -114,6 +127,16 @@ This one was found the hard way: a lid closed with a session working, the
 session died at 14:11, the flag correctly released at 14:16, and the Mac then
 sat awake on battery until 16:32, draining 50% to 35%. The release worked.
 Nothing turned it into actual sleep.
+
+**The panel is an `NSPopover` from an `NSStatusItem`, not SwiftUI's
+`MenuBarExtra`.** MenuBarExtra produced three distinct bug classes here: it did
+not re-render on state changes (the panel went hours stale), it never made its
+window key (dimmed switches, swallowed first clicks), and the re-render used to
+paper over the first problem re-fired switch actions, flipping toggles the user
+had just set. A popover becomes key on its own and hosts SwiftUI normally.
+Related lesson, learned the same night: never probe disk or spawn a subprocess
+inside a SwiftUI render pass. It corrupts the update graph (`AttributeGraph:
+cycle detected`) and dropped state updates show up as UI that lies.
 
 ## Build from source
 
@@ -132,16 +155,20 @@ xcrun notarytool store-credentials notary \
   --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
 ```
 
+The app and the DMG are notarised separately, on purpose: stapling only the DMG
+leaves the copy dragged into /Applications without a ticket of its own, and a
+first launch while offline can fail.
+
 No Xcode project: a handful of Swift files compiled with `swiftc` into a bundle.
 
 | File | Purpose |
 |---|---|
-| `StayAwake.swift` | app entry, `MenuBarExtra` |
+| `StayAwake.swift` | app entry: `NSStatusItem`, the popover, app delegate |
 | `Panel.swift` | the dropdown panel |
 | `SetupView.swift` | onboarding window |
 | `Setup.swift` | sudoers rule and hook installation |
 | `Icon.swift` | menu bar art loading |
-| `Power.swift` | `pmset` state, auto mode, battery guard |
+| `Power.swift` | `pmset` state, auto mode, battery guard, IOKit reads |
 | `Claims.swift` | claim store shared by app and hook helper |
 | `ClaimTool.swift` | `stayawake-claim`, invoked by hooks |
 | `Activity.swift` | the recent-events log |
