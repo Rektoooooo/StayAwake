@@ -31,8 +31,11 @@ struct SettingRow: View {
                 Text(title).font(.system(size: 12))
                 Text(caption).font(.system(size: 11)).foregroundStyle(captionTint)
             }
+            // Truncate a long caption rather than letting it push this row's
+            // toggle out of the shared column ("2 sessions + 2 agents working"
+            // did exactly that).
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
+            .truncationMode(.tail)
 
             Spacer(minLength: 8)
 
@@ -41,7 +44,7 @@ struct SettingRow: View {
                 .labelsHidden()
                 .controlSize(.small)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.vertical, 9)
     }
 }
@@ -122,7 +125,7 @@ struct PanelView: View {
                     Spacer(minLength: 0)
                 }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 8)
             separator
             MenuRow {
                 power.restoreSleepAndQuit()
@@ -138,10 +141,10 @@ struct PanelView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 8)
         }
         .padding(.vertical, 6)
-        .frame(width: 260)
+        .frame(width: 300)
         .onAppear { power.refresh() }
         .onReceive(ticker) { now in
             tick = now
@@ -162,7 +165,7 @@ struct PanelView: View {
                     .foregroundStyle(.secondary)
             }
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
+            .truncationMode(.tail)
 
             Spacer(minLength: 8)
 
@@ -171,13 +174,13 @@ struct PanelView: View {
                 .labelsHidden()
                 .controlSize(.small)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 10)
     }
 
     private var separator: some View {
-        Divider().padding(.horizontal, 12)
+        Divider().padding(.horizontal, 16)
     }
 
     private var autoRow: some View {
@@ -205,7 +208,7 @@ struct PanelView: View {
             symbol: "arrow.up.forward.app",
             tint: .secondary,
             title: "Launch at login",
-            caption: loginError ?? (loginEnabled ? "On" : "Off, will not survive a restart"),
+            caption: loginError ?? (loginEnabled ? "On" : "Off, won't survive a restart"),
             captionTint: loginEnabled && loginError == nil ? .secondary : .orange,
             isOn: Binding(
                 get: { loginEnabled },
@@ -242,7 +245,7 @@ struct PanelView: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.vertical, 9)
     }
 
@@ -286,7 +289,7 @@ struct PanelView: View {
                 .foregroundStyle(power.lastError == nil ? .secondary : .primary)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.vertical, 9)
     }
 
@@ -304,6 +307,7 @@ struct PanelView: View {
         if isStalled { return "exclamationmark.triangle.fill" }
         if power.lastError != nil { return "exclamationmark.circle.fill" }
         if isDraining { return "exclamationmark.triangle.fill" }
+        if power.isCharging { return "battery.100.bolt" }
         return power.onBattery ? "battery.75" : "powerplug.fill"
     }
 
@@ -318,6 +322,15 @@ struct PanelView: View {
         if let error = power.lastError { return error }
         let level = power.batteryLevel.map { " \($0)" } ?? ""
         if isDraining { return "On battery\(level), plug in or it will drain" }
-        return power.onBattery ? "On battery\(level)" : "On AC power"
+        // "5:08 left" / "0:45 to full", omitted while macOS is recalculating.
+        let clock = power.minutesRemaining.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
+        if power.onBattery {
+            return clock.map { "On battery\(level), \($0) left" } ?? "On battery\(level)"
+        }
+        if power.isCharging {
+            return clock.map { "Charging\(level), \($0) to full" } ?? "Charging\(level)"
+        }
+        if power.batteryPercent == 100 { return "On AC power, charged" }
+        return "On AC power\(level)"
     }
 }

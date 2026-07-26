@@ -29,6 +29,11 @@ final class PowerController: ObservableObject {
     @Published private(set) var onBattery = false
     @Published private(set) var batteryLevel: String?
     @Published private(set) var batteryPercent: Int?
+    @Published private(set) var isCharging = false
+    /// Minutes to empty when on battery, minutes to full when charging.
+    /// nil while macOS is still calculating, which it does for a minute or so
+    /// after every plug/unplug; a sentinel shown as a number would be a lie.
+    @Published private(set) var minutesRemaining: Int?
     @Published private(set) var lastError: String?
     /// Main sessions and background subagents, counted separately so the
     /// caption can say "1 session + 6 agents" instead of "7 sessions".
@@ -230,21 +235,34 @@ final class PowerController: ObservableObject {
             onBattery = false
             batteryLevel = nil
             batteryPercent = nil
+            isCharging = false
+            minutesRemaining = nil
             return
         }
 
         let providing = IOPSGetProvidingPowerSourceType(snapshot)?.takeUnretainedValue() as String?
         onBattery = providing == kIOPSBatteryPowerValue
 
-        batteryPercent = sources.compactMap { source -> Int? in
-            guard let description = IOPSGetPowerSourceDescription(snapshot, source)?
-                    .takeUnretainedValue() as? [String: Any],
-                  let current = description[kIOPSCurrentCapacityKey] as? Int,
-                  let max = description[kIOPSMaxCapacityKey] as? Int, max > 0
-            else { return nil }
-            return Int((Double(current) / Double(max) * 100).rounded())
-        }.first
+        let battery = sources.compactMap {
+            IOPSGetPowerSourceDescription(snapshot, $0)?.takeUnretainedValue() as? [String: Any]
+        }.first { $0[kIOPSTypeKey] as? String == kIOPSInternalBatteryType }
+
+        if let current = battery?[kIOPSCurrentCapacityKey] as? Int,
+           let max = battery?[kIOPSMaxCapacityKey] as? Int, max > 0 {
+            batteryPercent = Int((Double(current) / Double(max) * 100).rounded())
+        } else {
+            batteryPercent = nil
+        }
         batteryLevel = batteryPercent.map { "\($0)%" }
+        isCharging = (battery?[kIOPSIsChargingKey] as? NSNumber)?.boolValue ?? false
+
+        // Whichever direction applies. Raw values are minutes; -1, 0 and
+        // absurdly large numbers all mean "still calculating", so anything
+        // outside a sane day-long window is treated as unknown.
+        let raw = onBattery
+            ? battery?[kIOPSTimeToEmptyKey] as? Int
+            : (isCharging ? battery?[kIOPSTimeToFullChargeKey] as? Int : nil)
+        minutesRemaining = raw.flatMap { (1..<1440).contains($0) ? $0 : nil }
     }
 
     /// Off by default. `defaults write cz.sebastiankucera.stayawake debugHeartbeat -bool true`
