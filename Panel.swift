@@ -274,18 +274,27 @@ struct PanelView: View {
     // can bite, so that combination gets a warning rather than a status line.
     private var isDraining: Bool { power.sleepDisabled && power.onBattery }
 
+    /// The poll loop runs every 5 seconds, so anything close to a minute old
+    /// means it has stopped and every reading on screen is untrustworthy.
+    private var isStalled: Bool {
+        Date().timeIntervalSince(power.lastRefresh) > 60
+    }
+
     private var statusSymbol: String {
+        if isStalled { return "exclamationmark.triangle.fill" }
         if power.lastError != nil { return "exclamationmark.circle.fill" }
         if isDraining { return "exclamationmark.triangle.fill" }
         return power.onBattery ? "battery.75" : "powerplug.fill"
     }
 
     private var statusTint: Color {
+        if isStalled { return .orange }
         if power.lastError != nil { return .red }
         return isDraining ? .orange : .secondary
     }
 
     private var statusText: String {
+        if isStalled { return "Not updating, quit and reopen StayAwake" }
         if let error = power.lastError { return error }
         let level = power.batteryLevel.map { " \($0)" } ?? ""
         if isDraining { return "On battery\(level), plug in or it will drain" }

@@ -32,6 +32,10 @@ final class PowerController: ObservableObject {
     @Published private(set) var activity: [ActivityEntry] = ActivityLog.load()
     /// Seconds left before auto mode releases, nil when not counting down.
     @Published private(set) var idleCountdown: Int?
+    /// When the poll loop last completed. Surfaced in the panel so a stalled
+    /// loop shows as a warning rather than quietly serving stale readings,
+    /// which is how a frozen battery percentage once drained the machine.
+    @Published private(set) var lastRefresh = Date()
 
     /// Safety net: below the threshold on battery, hand sleep back even if
     /// Claude is working. Running the machine flat in a bag helps nobody.
@@ -64,9 +68,10 @@ final class PowerController: ObservableObject {
 
     private static let autoModeKey = "autoMode"
     private static let batteryGuardKey = "batteryGuard"
-    private var timer: Timer?
+    private var ticker: DispatchSourceTimer?
     private var claimWatcher: DispatchSourceFileSystemObject?
     private var idleSince: Date?
+    private var appNapToken: NSObjectProtocol?
 
     #if PREVIEW
     /// Stops the offscreen renderer's onAppear from overwriting stub state.
@@ -84,14 +89,45 @@ final class PowerController: ObservableObject {
             LoginItem.set(true)
         }
         #endif
+        // A menu bar app with no visible window is prime App Nap material, and
+        // the first thing App Nap suspends is timers. That once froze the
+        // battery reading for two and a half hours: the guard never got to
+        // evaluate, the idle countdown never expired, and sleep stayed held
+        // until the battery was flat.
+        //
+        // ...AllowingIdleSystemSleep matters. Plain .userInitiated would hold
+        // sleep off by itself, which is the opposite of the job.
+        appNapToken = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Tracking Claude Code sessions and battery level")
+
         passwordless = Self.checkPasswordless()
         refresh()
-        // Stay in sync with changes made from the terminal, and sweep claims
-        // left behind by sessions that never fired Stop.
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        startTicker()
+        watchClaims()
+        watchWake()
+    }
+
+    /// A dispatch timer rather than a run loop Timer: it keeps firing whatever
+    /// mode the run loop is in, including while the panel is open.
+    private func startTicker() {
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + 5, repeating: 5, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in
             Task { @MainActor in self?.refresh() }
         }
-        watchClaims()
+        timer.resume()
+        ticker = timer
+    }
+
+    /// Waking can mean hours have passed and the battery is somewhere else
+    /// entirely, so re-read at once rather than waiting for the next tick.
+    private func watchWake() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
     }
 
     /// Reacts to a hook writing a claim within milliseconds; the timer above is
@@ -122,6 +158,8 @@ final class PowerController: ObservableObject {
         #endif
         readState()
         activeSessions = ClaimStore.activeSessions()
+        lastRefresh = Date()
+        heartbeat()
         // The guard outranks both auto mode and a manual hold: it is the one
         // rule that exists to protect the machine from the app.
         if enforceBatteryGuard() { return }
@@ -156,6 +194,18 @@ final class PowerController: ObservableObject {
             batteryLevel = nil
             batteryPercent = nil
         }
+    }
+
+    /// Off by default. `defaults write cz.sebastiankucera.stayawake debugHeartbeat -bool true`
+    /// touches a file on every refresh, so a stalled poll loop can be seen from
+    /// outside the app. Worth having: a silently stalled loop is what let the
+    /// battery run down once.
+    private func heartbeat() {
+        guard UserDefaults.standard.bool(forKey: "debugHeartbeat") else { return }
+        let url = ClaimStore.directory
+            .deletingLastPathComponent()
+            .appendingPathComponent("heartbeat")
+        try? Data("\(Date())\n".utf8).write(to: url)
     }
 
     private func log(_ kind: ActivityEntry.Kind, _ detail: String) {
