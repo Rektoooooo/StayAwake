@@ -84,12 +84,21 @@ enum ClaimStore {
             }
 
             var pid: pid_t = 0
-            var isAgent = false
+            var isAgent: Bool?
             if let body = try? String(contentsOf: entry, encoding: .utf8) {
                 for line in body.split(separator: "\n").prefix(2) {
                     if line.hasPrefix("pid="), let value = Int32(line.dropFirst(4)) { pid = value }
-                    if line == "kind=agent" { isAgent = true }
+                    if line.hasPrefix("kind=") { isAgent = line == "kind=agent" }
                 }
+            }
+            if isAgent == nil {
+                // Legacy v1 claim with no kind marker, present for up to 45
+                // minutes after upgrading. Its name is the session UUID (36
+                // chars) with the agent id appended after a dash, so anything
+                // longer than a bare UUID belongs to an agent. Without this,
+                // a leftover agent claim gets miscounted as a session.
+                let name = entry.lastPathComponent
+                isAgent = name.count > 36 && Array(name)[safe: 36] == "-"
             }
 
             // kill(pid, 0) probes liveness without sending a signal. ESRCH
@@ -99,8 +108,14 @@ enum ClaimStore {
                 continue
             }
 
-            if isAgent { counts.agents += 1 } else { counts.sessions += 1 }
+            if isAgent == true { counts.agents += 1 } else { counts.sessions += 1 }
         }
         return counts
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
