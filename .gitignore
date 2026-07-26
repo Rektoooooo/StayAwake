@@ -1,0 +1,5 @@
+# Build output
+StayAwake.app/
+*.dmg
+
+.DS_Store
