@@ -114,7 +114,16 @@ Nothing turned it into actual sleep.
 ```sh
 ./tools/install.sh     # build, install to /Applications, relaunch
 ./build.sh             # build in place only
-./tools/make-dmg.sh    # package a release
+./tools/make-dmg.sh    # package, sign and notarise a release
+```
+
+`build.sh` signs with a Developer ID Application certificate when one is in the
+keychain, applying the hardened runtime and a secure timestamp, and falls back
+to ad-hoc otherwise. Releasing needs notarisation credentials stored once:
+
+```sh
+xcrun notarytool store-credentials notary \
+  --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
 ```
 
 No Xcode project: a handful of Swift files compiled with `swiftc` into a bundle.
