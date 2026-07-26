@@ -248,7 +248,7 @@ final class PowerController: ObservableObject {
         #endif
         let value = enabled ? "1" : "0"
 
-        // Fast path: the narrowly scoped NOPASSWD rule from sudoers-stayawake.
+        // Fast path: the narrowly scoped NOPASSWD rule installed by Setup.
         // Without it this fails silently and we fall back to a GUI auth prompt.
         var result = Shell.run("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-a", "disablesleep", value])
 
