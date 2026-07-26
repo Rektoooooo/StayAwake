@@ -327,8 +327,11 @@ struct PanelView: View {
         if let error = power.lastError { return error }
         let level = power.batteryLevel.map { " \($0)" } ?? ""
         if drainWarning { return "On battery\(level), plug in or it will drain" }
-        // "5:08 left" / "0:45 to full", omitted while macOS is recalculating.
-        let clock = power.minutesRemaining.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
+        // "5h 8m left" / "45m to full", omitted while macOS is recalculating.
+        // Spelled out because "5:01" reads as a clock time, not a duration.
+        let clock = power.minutesRemaining.map { minutes in
+            minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+        }
         if power.onBattery {
             return clock.map { "On battery\(level), \($0) left" } ?? "On battery\(level)"
         }
