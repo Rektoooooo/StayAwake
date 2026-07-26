@@ -6,6 +6,11 @@ import IOKit.pwr_mgt
 // keeps a Mac running with the lid shut. caffeinate can't do this: it holds
 // off idle sleep, but clamshell sleep overrides power assertions.
 
+extension Notification.Name {
+    /// Posted by the setup window after any step completes.
+    static let stayAwakeSetupDidChange = Notification.Name("StayAwakeSetupDidChange")
+}
+
 enum Shell {
     @discardableResult
     static func run(_ path: String, _ args: [String]) -> (out: String, status: Int32) {
@@ -118,6 +123,15 @@ final class PowerController: ObservableObject {
         watchClaims()
         watchWake()
         watchPowerSource()
+
+        NotificationCenter.default.addObserver(
+            forName: .stayAwakeSetupDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.recheckPasswordless()
+                self?.refresh()
+            }
+        }
     }
 
     /// A dispatch timer rather than a run loop Timer: it keeps firing whatever
@@ -178,6 +192,16 @@ final class PowerController: ObservableObject {
     private static func checkPasswordless() -> Bool {
         // -l asks "may I?" without running anything and without prompting.
         Shell.run("/usr/bin/sudo", ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", "1"]).status == 0
+    }
+
+    /// The launch-time check goes stale the moment setup installs the sudoers
+    /// rule: the panel then keeps saying "Needs passwordless setup" until the
+    /// app restarts. Re-checked when the panel opens and when setup changes.
+    func recheckPasswordless() {
+        DispatchQueue.global().async {
+            let granted = Self.checkPasswordless()
+            Task { @MainActor in self.passwordless = granted }
+        }
     }
 
     func refresh() {

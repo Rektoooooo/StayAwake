@@ -94,6 +94,9 @@ struct PanelView: View {
 
     @State private var loginEnabled = LoginItem.isEnabled
     @State private var loginError: String?
+    /// Captured when the panel opens. Setup.isComplete spawns a subprocess,
+    /// which must never happen inside a render pass.
+    @State private var setupComplete = true
 
     /// Re-evaluates the body while the panel is on screen.
     ///
@@ -130,11 +133,11 @@ struct PanelView: View {
                 SetupWindow.shared.show()
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: Setup.isComplete
+                    Image(systemName: setupComplete
                           ? "checkmark.circle" : "exclamationmark.circle.fill")
-                        .foregroundStyle(Setup.isComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                        .foregroundStyle(setupComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
                         .frame(width: 14)
-                    Text(Setup.isComplete ? "Setup" : "Finish setup")
+                    Text(setupComplete ? "Setup" : "Finish setup")
                         .font(.system(size: 12))
                     Spacer(minLength: 0)
                 }
@@ -161,30 +164,17 @@ struct PanelView: View {
         .frame(width: 300)
         .onAppear {
             power.refresh()
-            activatePanel()
-        }
-        .onReceive(ticker) { now in
-            tick = now
+            power.recheckPasswordless()
             loginEnabled = LoginItem.isEnabled
+            DispatchQueue.global().async {
+                let complete = Setup.isComplete
+                DispatchQueue.main.async { setupComplete = complete }
+            }
         }
-    }
-
-    /// Root cause of every interaction bug this panel has had: MenuBarExtra
-    /// shows its window without making it key, and a non-key window gets
-    /// second-class event handling — AppKit switches render dimmed, SwiftUI
-    /// buttons swallow the first click, and gestures can go fully dead after
-    /// an auth dialog steals focus. Taking key focus on open (what Control
-    /// Center's panels do) fixes the class of problem instead of one symptom.
-    private func activatePanel() {
-        DispatchQueue.main.async {
-            NSApp.activate(ignoringOtherApps: true)
-            // The status panel floats above normal window level; the Setup
-            // window is a normal window. Class names don't survive compilation
-            // reliably, window level does.
-            NSApp.windows
-                .first { $0.isVisible && $0.level.rawValue > NSWindow.Level.normal.rawValue }?
-                .makeKey()
-        }
+        // The ticker only advances the clock for captions. State probes that
+        // talk to other processes (login item XPC, sudo) happen on open, not
+        // every second.
+        .onReceive(ticker) { tick = $0 }
     }
 
     private var header: some View {

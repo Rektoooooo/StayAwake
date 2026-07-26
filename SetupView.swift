@@ -95,9 +95,16 @@ struct SetupView: View {
         .padding(.vertical, 14)
     }
 
+    /// From the cached dict only. Setup.isComplete probes disk and spawns a
+    /// sudo subprocess; doing that inside a render pass caused AttributeGraph
+    /// cycles and a progress spinner that never cleared.
+    private var allDone: Bool {
+        Setup.Step.allCases.allSatisfy { done[$0] == true }
+    }
+
     private var footer: some View {
         HStack {
-            if Setup.isComplete {
+            if allDone {
                 Label("All set", systemImage: "checkmark.circle.fill")
                     .font(.system(size: 12))
                     .foregroundStyle(.green)
@@ -107,7 +114,7 @@ struct SetupView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button(Setup.isComplete ? "Done" : "Later") { onFinish() }
+            Button(allDone ? "Done" : "Later") { onFinish() }
                 .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 20)
@@ -115,19 +122,35 @@ struct SetupView: View {
     }
 
     private func refresh() {
-        for step in Setup.Step.allCases { done[step] = Setup.isDone(step) }
+        // isDone probes disk and spawns sudo; keep it off the main thread and
+        // out of the render pass.
+        DispatchQueue.global().async {
+            let states = Dictionary(uniqueKeysWithValues:
+                Setup.Step.allCases.map { ($0, Setup.isDone($0)) })
+            DispatchQueue.main.async { done = states }
+        }
     }
 
     private func perform(_ step: Setup.Step) {
         busy = step
         errors[step] = nil
+        NSLog("Setup step %@ starting", step.rawValue)
         // Off the main thread: the privileged step blocks on a system dialog.
         DispatchQueue.global().async {
             let failure = Setup.perform(step)
             DispatchQueue.main.async {
+                NSLog("Setup step %@ finished: %@", step.rawValue, failure ?? "ok")
                 errors[step] = failure
                 busy = nil
                 refresh()
+                // The panel caches the passwordless answer; tell it the world
+                // changed so "Needs passwordless setup" clears immediately.
+                NotificationCenter.default.post(name: .stayAwakeSetupDidChange, object: nil)
+                // The auth dialog deactivates this app, which drops the setup
+                // window behind whatever is frontmost. It never closed; it was
+                // buried, which reads exactly like "the setup closed on me".
+                // Re-front it so the user sees the step complete.
+                SetupWindow.shared.show()
             }
         }
     }
@@ -165,6 +188,7 @@ final class SetupWindow: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        NSLog("Setup window closing; call stack: %@", Thread.callStackSymbols.prefix(8).joined(separator: " | "))
         window = nil
     }
 }
