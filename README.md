@@ -6,7 +6,7 @@
 
 **Keep your Mac awake with the lid closed, automatically, only while Claude Code is actually working.**
 
-<img src="docs/panel.png" width="306" alt="The StayAwake panel: awake, following Claude Code, with one session working">
+<img src="docs/panel.png" width="330" alt="The StayAwake panel: awake, following Claude Code, with 1 session and 12 agents working">
 
 </div>
 
