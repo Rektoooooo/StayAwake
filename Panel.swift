@@ -294,8 +294,13 @@ struct PanelView: View {
     }
 
     // Draining the battery flat with the lid shut is the one way this app
-    // can bite, so that combination gets a warning rather than a status line.
+    // can bite. But a warning shown at 96% is noise that teaches you to ignore
+    // it, so the orange treatment waits until charge approaches the guard:
+    // below twice the release threshold (40% by default).
     private var isDraining: Bool { power.sleepDisabled && power.onBattery }
+    private var drainWarning: Bool {
+        isDraining && (power.batteryPercent ?? 100) <= power.batteryThreshold * 2
+    }
 
     /// The poll loop runs every 5 seconds, so anything close to a minute old
     /// means it has stopped and every reading on screen is untrustworthy.
@@ -306,7 +311,7 @@ struct PanelView: View {
     private var statusSymbol: String {
         if isStalled { return "exclamationmark.triangle.fill" }
         if power.lastError != nil { return "exclamationmark.circle.fill" }
-        if isDraining { return "exclamationmark.triangle.fill" }
+        if drainWarning { return "exclamationmark.triangle.fill" }
         if power.isCharging { return "battery.100.bolt" }
         return power.onBattery ? "battery.75" : "powerplug.fill"
     }
@@ -314,14 +319,14 @@ struct PanelView: View {
     private var statusTint: Color {
         if isStalled { return .orange }
         if power.lastError != nil { return .red }
-        return isDraining ? .orange : .secondary
+        return drainWarning ? .orange : .secondary
     }
 
     private var statusText: String {
         if isStalled { return "Not updating, quit and reopen StayAwake" }
         if let error = power.lastError { return error }
         let level = power.batteryLevel.map { " \($0)" } ?? ""
-        if isDraining { return "On battery\(level), plug in or it will drain" }
+        if drainWarning { return "On battery\(level), plug in or it will drain" }
         // "5:08 left" / "0:45 to full", omitted while macOS is recalculating.
         let clock = power.minutesRemaining.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
         if power.onBattery {
