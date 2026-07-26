@@ -11,30 +11,20 @@ struct StatusLight: View {
     }
 }
 
-/// A switch that draws its own state instead of using the system NSSwitch.
-///
-/// The system switch dims to grey whenever the panel window is not key, which
-/// in a menu bar panel is often, and a dimmed ON switch is indistinguishable
-/// from OFF at a glance. This one always renders true state.
+/// The native switch. It handles its own clicks, animates, and renders
+/// correctly — PROVIDED the panel window is key, which activatePanel()
+/// guarantees. A custom-drawn replacement was tried to work around the
+/// dimmed-when-not-key rendering and caused nothing but trouble: dead first
+/// clicks as a Button, dead gestures after an auth dialog, stale visuals.
+/// The lesson stays here so nobody repeats it.
 struct PanelToggle: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        Button {
-            withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) { isOn.toggle() }
-        } label: {
-            Capsule()
-                .fill(isOn ? Color.accentColor : Color.primary.opacity(0.18))
-                .frame(width: 34, height: 20)
-                .overlay(alignment: isOn ? .trailing : .leading) {
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 16, height: 16)
-                        .padding(2)
-                        .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
-                }
-        }
-        .buttonStyle(.plain)
+        Toggle("", isOn: $isOn)
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .controlSize(.small)
     }
 }
 
@@ -169,10 +159,31 @@ struct PanelView: View {
         }
         .padding(.vertical, 6)
         .frame(width: 300)
-        .onAppear { power.refresh() }
+        .onAppear {
+            power.refresh()
+            activatePanel()
+        }
         .onReceive(ticker) { now in
             tick = now
             loginEnabled = LoginItem.isEnabled
+        }
+    }
+
+    /// Root cause of every interaction bug this panel has had: MenuBarExtra
+    /// shows its window without making it key, and a non-key window gets
+    /// second-class event handling — AppKit switches render dimmed, SwiftUI
+    /// buttons swallow the first click, and gestures can go fully dead after
+    /// an auth dialog steals focus. Taking key focus on open (what Control
+    /// Center's panels do) fixes the class of problem instead of one symptom.
+    private func activatePanel() {
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            // The status panel floats above normal window level; the Setup
+            // window is a normal window. Class names don't survive compilation
+            // reliably, window level does.
+            NSApp.windows
+                .first { $0.isVisible && $0.level.rawValue > NSWindow.Level.normal.rawValue }?
+                .makeKey()
         }
     }
 
