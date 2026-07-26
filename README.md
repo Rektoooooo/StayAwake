@@ -39,9 +39,15 @@ things. StayAwake installs Claude Code hooks instead:
 | `SessionEnd` | release | session gone |
 
 Each working session writes a claim file, and sleep is held while any claim
-exists. Claims are counted, so several sessions overlap correctly, and
-background subagents hold their own claim: a main-loop `Stop` cannot pull sleep
-out from under an agent that is still running.
+exists. Claims are counted, sessions and background subagents separately, so
+several sessions overlap correctly and a main-loop `Stop` cannot pull sleep out
+from under an agent that is still running. Every claim records the process id
+of the claude instance it belongs to, so a session that is killed hard or
+crashes is pruned within seconds rather than after a timeout.
+
+Battery and power state are read in-process from IOKit and pushed by
+plug/unplug notifications, so the battery guard reacts to an unplug
+immediately instead of at the next poll.
 
 Sleep is handed back after **5 minutes of quiet**, not instantly. A turn ending
 is not the same as you being done, and the grace covers the gap between turns so

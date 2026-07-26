@@ -78,12 +78,25 @@ struct PanelView: View {
     @State private var loginEnabled = LoginItem.isEnabled
     @State private var loginError: String?
 
+    /// Re-evaluates the body while the panel is on screen.
+    ///
+    /// MenuBarExtra builds its window content once and does not reliably
+    /// re-render it when the observed object changes, so the panel would sit
+    /// showing whatever was true when it was first built: an activity list
+    /// hours out of date, a stale battery reading, a countdown frozen at
+    /// whatever it said at launch. `.common` mode so it keeps firing while the
+    /// panel is being tracked.
+    @State private var tick = Date()
+    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
     private var isOn: Binding<Bool> {
         Binding(get: { power.sleepDisabled }, set: { power.setSleepDisabled($0) })
     }
 
     var body: some View {
+        // Reading tick here is what ties the body to the timer above.
         VStack(alignment: .leading, spacing: 0) {
+            let _ = tick
             header
             separator
             autoRow
@@ -130,6 +143,10 @@ struct PanelView: View {
         .padding(.vertical, 6)
         .frame(width: 260)
         .onAppear { power.refresh() }
+        .onReceive(ticker) { now in
+            tick = now
+            loginEnabled = LoginItem.isEnabled
+        }
     }
 
     private var header: some View {
@@ -166,7 +183,7 @@ struct PanelView: View {
     private var autoRow: some View {
         SettingRow(
             symbol: "terminal.fill",
-            tint: power.autoMode && power.activeSessions > 0 ? .green : .secondary,
+            tint: power.autoMode && power.claims.total > 0 ? .green : .secondary,
             title: "Follow Claude Code",
             caption: autoCaption,
             captionTint: power.autoMode && !power.passwordless ? .orange : .secondary,
@@ -244,15 +261,18 @@ struct PanelView: View {
         // Without the sudoers rule each transition would prompt for a password,
         // which defeats the point of automating it.
         if !power.passwordless { return "Needs passwordless setup" }
-        switch power.activeSessions {
-        case 0: break
-        case 1: return "1 session working"
-        case let count: return "\(count) sessions working"
+        if power.claims.total > 0 { return "\(power.claims.label) working" }
+        // Derived from idleSince and the panel's own clock, so it counts down
+        // every second instead of jumping at whatever cadence refresh() runs.
+        if power.sleepDisabled, let since = power.idleSince {
+            let remaining = Int((PowerController.grace - tick.timeIntervalSince(since)).rounded(.up))
+            if remaining > 0 {
+                return remaining >= 60
+                    ? "Idle, sleep in \(Int((Double(remaining) / 60).rounded(.up)))m"
+                    : "Idle, sleep in \(remaining)s"
+            }
         }
-        guard let countdown = power.idleCountdown else { return "Idle, sleep allowed" }
-        return countdown >= 60
-            ? "Idle, sleep in \(Int((Double(countdown) / 60).rounded(.up)))m"
-            : "Idle, sleep in \(countdown)s"
+        return "Idle, sleep allowed"
     }
 
     private var statusRow: some View {

@@ -1,4 +1,6 @@
 import AppKit
+import IOKit.ps
+import IOKit.pwr_mgt
 
 // A menu bar toggle for `pmset disablesleep`, the only flag that actually
 // keeps a Mac running with the lid shut. caffeinate can't do this: it holds
@@ -28,10 +30,13 @@ final class PowerController: ObservableObject {
     @Published private(set) var batteryLevel: String?
     @Published private(set) var batteryPercent: Int?
     @Published private(set) var lastError: String?
-    @Published private(set) var activeSessions = 0
+    /// Main sessions and background subagents, counted separately so the
+    /// caption can say "1 session + 6 agents" instead of "7 sessions".
+    @Published private(set) var claims = ClaimCounts()
     @Published private(set) var activity: [ActivityEntry] = ActivityLog.load()
-    /// Seconds left before auto mode releases, nil when not counting down.
-    @Published private(set) var idleCountdown: Int?
+    /// When the last working claim disappeared. The panel derives the live
+    /// countdown from this; refresh() releases once it exceeds the grace.
+    @Published private(set) var idleSince: Date?
     /// When the poll loop last completed. Surfaced in the panel so a stalled
     /// loop shows as a warning rather than quietly serving stale readings,
     /// which is how a frozen battery percentage once drained the machine.
@@ -70,7 +75,7 @@ final class PowerController: ObservableObject {
     private static let batteryGuardKey = "batteryGuard"
     private var ticker: DispatchSourceTimer?
     private var claimWatcher: DispatchSourceFileSystemObject?
-    private var idleSince: Date?
+    private var powerSourceWatcher: CFRunLoopSource?
     private var appNapToken: NSObjectProtocol?
 
     #if PREVIEW
@@ -106,18 +111,35 @@ final class PowerController: ObservableObject {
         startTicker()
         watchClaims()
         watchWake()
+        watchPowerSource()
     }
 
     /// A dispatch timer rather than a run loop Timer: it keeps firing whatever
-    /// mode the run loop is in, including while the panel is open.
+    /// mode the run loop is in, including while the panel is open. Two seconds
+    /// is affordable because state reads are now in-process IOKit calls, not
+    /// spawned pmset processes.
     private func startTicker() {
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        timer.schedule(deadline: .now() + 5, repeating: 5, leeway: .seconds(1))
+        timer.schedule(deadline: .now() + 2, repeating: 2, leeway: .milliseconds(500))
         timer.setEventHandler { [weak self] in
             Task { @MainActor in self?.refresh() }
         }
         timer.resume()
         ticker = timer
+    }
+
+    /// Plug/unplug and battery-percentage changes push a refresh immediately,
+    /// so the battery guard reacts to an unplug in milliseconds instead of at
+    /// the next poll.
+    private func watchPowerSource() {
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        guard let source = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            let controller = Unmanaged<PowerController>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor in controller.refresh() }
+        }, context)?.takeRetainedValue() else { return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        powerSourceWatcher = source
     }
 
     /// Waking can mean hours have passed and the battery is somewhere else
@@ -157,7 +179,7 @@ final class PowerController: ObservableObject {
         if frozen { return }
         #endif
         readState()
-        activeSessions = ClaimStore.activeSessions()
+        claims = ClaimStore.counts()
         lastRefresh = Date()
         heartbeat()
         // The guard outranks both auto mode and a manual hold: it is the one
@@ -176,24 +198,53 @@ final class PowerController: ObservableObject {
         return true
     }
 
-    private func readState() {
-        // `pmset -g` prints the SleepDisabled line only once the flag is set,
-        // so an absent line means normal sleep behaviour.
-        let settings = Shell.run("/usr/bin/pmset", ["-g"]).out
-        sleepDisabled = settings
-            .split(separator: "\n")
-            .first { $0.contains("SleepDisabled") }?
-            .contains("1") ?? false
+    /// IOPMCopySystemPowerSettings is public IOKit C API (it is what pmset -g
+    /// itself calls) but is missing from the Swift module map, so it is
+    /// resolved by symbol at startup.
+    private typealias CopySettings = @convention(c) () -> Unmanaged<CFDictionary>?
+    private static let copySystemPowerSettings: CopySettings? = {
+        guard let handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY),
+              let symbol = dlsym(handle, "IOPMCopySystemPowerSettings")
+        else { return nil }
+        return unsafeBitCast(symbol, to: CopySettings.self)
+    }()
 
-        let battery = Shell.run("/usr/bin/pmset", ["-g", "batt"]).out
-        onBattery = battery.contains("Battery Power")
-        if let range = battery.range(of: #"\d+%"#, options: .regularExpression) {
-            batteryLevel = String(battery[range])
-            batteryPercent = Int(battery[range].dropLast())
+    /// In-process IOKit reads, the same sources pmset itself uses. No spawned
+    /// processes, so this is microseconds and safe to call often; parsing
+    /// pmset's text output at 5s intervals is what these replaced.
+    private func readState() {
+        if let copy = Self.copySystemPowerSettings {
+            let settings = copy()?.takeRetainedValue() as? [String: Any]
+            sleepDisabled = settings?["SleepDisabled"] as? Bool ?? false
         } else {
+            // Symbol lookup failed (unexpected): fall back to parsing pmset.
+            sleepDisabled = Shell.run("/usr/bin/pmset", ["-g"]).out
+                .split(separator: "\n")
+                .first { $0.contains("SleepDisabled") }?
+                .contains("1") ?? false
+        }
+
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef]
+        else {
+            onBattery = false
             batteryLevel = nil
             batteryPercent = nil
+            return
         }
+
+        let providing = IOPSGetProvidingPowerSourceType(snapshot)?.takeUnretainedValue() as String?
+        onBattery = providing == kIOPSBatteryPowerValue
+
+        batteryPercent = sources.compactMap { source -> Int? in
+            guard let description = IOPSGetPowerSourceDescription(snapshot, source)?
+                    .takeUnretainedValue() as? [String: Any],
+                  let current = description[kIOPSCurrentCapacityKey] as? Int,
+                  let max = description[kIOPSMaxCapacityKey] as? Int, max > 0
+            else { return nil }
+            return Int((Double(current) / Double(max) * 100).rounded())
+        }.first
+        batteryLevel = batteryPercent.map { "\($0)%" }
     }
 
     /// Off by default. `defaults write cz.sebastiankucera.stayawake debugHeartbeat -bool true`
@@ -222,36 +273,29 @@ final class PowerController: ObservableObject {
     /// landing on a sleeping Mac, and stops `pmset` churning at every turn
     /// boundary of an interactive session.
     private func evaluateAuto() {
-        guard autoMode else { idleCountdown = nil; return }
+        guard autoMode else { idleSince = nil; return }
 
-        if activeSessions > 0 {
+        if claims.total > 0 {
             idleSince = nil
-            idleCountdown = nil
             if !sleepDisabled {
-                let plural = activeSessions == 1 ? "session" : "sessions"
-                apply(true, reason: "\(activeSessions) \(plural) working")
+                apply(true, reason: "\(claims.label) working")
             }
             return
         }
 
         guard sleepDisabled else {
             idleSince = nil
-            idleCountdown = nil
             return
         }
 
         let since = idleSince ?? Date()
         idleSince = since
-        let elapsed = Date().timeIntervalSince(since)
 
-        if elapsed >= Self.grace {
+        if Date().timeIntervalSince(since) >= Self.grace {
             idleSince = nil
-            idleCountdown = nil
             let quiet = Self.grace >= 60 ? "\(Int(Self.grace / 60))m" : "\(Int(Self.grace))s"
             apply(false, reason: "idle \(quiet)")
             sleepNowIfShut()
-        } else {
-            idleCountdown = Int((Self.grace - elapsed).rounded(.up))
         }
     }
 
@@ -333,6 +377,7 @@ extension PowerController {
         batteryLevel: String?,
         autoMode: Bool = false,
         activeSessions: Int = 0,
+        activeAgents: Int = 0,
         passwordless: Bool = true
     ) -> PowerController {
         let controller = PowerController()
@@ -340,7 +385,7 @@ extension PowerController {
         controller.onBattery = onBattery
         controller.batteryLevel = batteryLevel
         controller.batteryPercent = batteryLevel.flatMap { Int($0.dropLast()) }
-        controller.activeSessions = activeSessions
+        controller.claims = ClaimCounts(sessions: activeSessions, agents: activeAgents)
         controller.passwordless = passwordless
         controller.frozen = true
         controller.autoMode = autoMode
