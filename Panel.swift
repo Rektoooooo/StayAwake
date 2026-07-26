@@ -11,6 +11,33 @@ struct StatusLight: View {
     }
 }
 
+/// A switch that draws its own state instead of using the system NSSwitch.
+///
+/// The system switch dims to grey whenever the panel window is not key, which
+/// in a menu bar panel is often, and a dimmed ON switch is indistinguishable
+/// from OFF at a glance. This one always renders true state.
+struct PanelToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.9)) { isOn.toggle() }
+        } label: {
+            Capsule()
+                .fill(isOn ? Color.accentColor : Color.primary.opacity(0.18))
+                .frame(width: 34, height: 20)
+                .overlay(alignment: isOn ? .trailing : .leading) {
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 16, height: 16)
+                        .padding(2)
+                        .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+                }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// A labelled switch row, used for every setting in the panel.
 struct SettingRow: View {
     let symbol: String
@@ -39,10 +66,7 @@ struct SettingRow: View {
 
             Spacer(minLength: 8)
 
-            Toggle("", isOn: $isOn)
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .controlSize(.small)
+            PanelToggle(isOn: $isOn)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -169,10 +193,7 @@ struct PanelView: View {
 
             Spacer(minLength: 8)
 
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .controlSize(.small)
+            PanelToggle(isOn: isOn)
         }
         .padding(.horizontal, 16)
         .padding(.top, 4)
@@ -186,7 +207,7 @@ struct PanelView: View {
     private var autoRow: some View {
         SettingRow(
             symbol: "terminal.fill",
-            tint: power.autoMode && power.claims.total > 0 ? .green : .secondary,
+            tint: power.autoMode && power.claims.total > 0 && !power.autoSnoozed ? .green : .secondary,
             title: "Follow Claude Code",
             caption: autoCaption,
             captionTint: power.autoMode && !power.passwordless ? .orange : .secondary,
@@ -264,6 +285,9 @@ struct PanelView: View {
         // Without the sudoers rule each transition would prompt for a password,
         // which defeats the point of automating it.
         if !power.passwordless { return "Needs passwordless setup" }
+        if power.autoSnoozed && power.claims.total > 0 {
+            return "Paused for current work"
+        }
         if power.claims.total > 0 { return "\(power.claims.label) working" }
         // Derived from idleSince and the panel's own clock, so it counts down
         // every second instead of jumping at whatever cadence refresh() runs.

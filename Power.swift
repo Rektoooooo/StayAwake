@@ -66,6 +66,7 @@ final class PowerController: ObservableObject {
     @Published var autoMode: Bool = UserDefaults.standard.bool(forKey: autoModeKey) {
         didSet {
             UserDefaults.standard.set(autoMode, forKey: Self.autoModeKey)
+            autoSnoozed = false   // flipping the mode is a fresh decision
             evaluateAuto()
         }
     }
@@ -295,11 +296,15 @@ final class PowerController: ObservableObject {
 
         if claims.total > 0 {
             idleSince = nil
+            // The user explicitly released while this work was running, so
+            // holding again now would just fight them.
+            if autoSnoozed { return }
             if !sleepDisabled {
                 apply(true, reason: "\(claims.label) working")
             }
             return
         }
+        autoSnoozed = false
 
         guard sleepDisabled else {
             idleSince = nil
@@ -347,7 +352,18 @@ final class PowerController: ObservableObject {
         return ids.prefix(Int(count)).contains { CGDisplayIsBuiltin($0) == 0 }
     }
 
+    /// Set when the user turns Keep awake off while auto mode is holding.
+    /// Auto stays hands-off until the current work finishes; the next fresh
+    /// turn re-engages it. Without this the toggle flips itself back within
+    /// two seconds of being switched off, which reads as a bug.
+    @Published private(set) var autoSnoozed = false
+
     func setSleepDisabled(_ enabled: Bool) {
+        if enabled {
+            autoSnoozed = false
+        } else if autoMode && claims.total > 0 {
+            autoSnoozed = true
+        }
         apply(enabled, reason: "by hand")
     }
 
@@ -396,17 +412,21 @@ extension PowerController {
         autoMode: Bool = false,
         activeSessions: Int = 0,
         activeAgents: Int = 0,
+        autoSnoozed: Bool = false,
         passwordless: Bool = true
     ) -> PowerController {
         let controller = PowerController()
+        controller.frozen = true
+        // autoMode first: its didSet runs evaluateAuto, which would otherwise
+        // overwrite the stubbed sleepDisabled/claims below.
+        controller.autoMode = autoMode
         controller.sleepDisabled = sleepDisabled
         controller.onBattery = onBattery
         controller.batteryLevel = batteryLevel
         controller.batteryPercent = batteryLevel.flatMap { Int($0.dropLast()) }
         controller.claims = ClaimCounts(sessions: activeSessions, agents: activeAgents)
+        controller.autoSnoozed = autoSnoozed
         controller.passwordless = passwordless
-        controller.frozen = true
-        controller.autoMode = autoMode
         return controller
     }
 }
