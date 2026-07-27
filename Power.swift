@@ -456,7 +456,9 @@ extension PowerController {
         activeSessions: Int = 0,
         activeAgents: Int = 0,
         autoSnoozed: Bool = false,
-        passwordless: Bool = true
+        passwordless: Bool = true,
+        limitNotice: String? = nil,
+        usage: UsageLimits? = nil
     ) -> PowerController {
         let controller = PowerController()
         controller.frozen = true
@@ -470,6 +472,8 @@ extension PowerController {
         controller.claims = ClaimCounts(sessions: activeSessions, agents: activeAgents)
         controller.autoSnoozed = autoSnoozed
         controller.passwordless = passwordless
+        controller.limitNotice = limitNotice
+        controller.usage = usage
         return controller
     }
 }

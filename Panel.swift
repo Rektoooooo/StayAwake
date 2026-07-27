@@ -239,7 +239,10 @@ struct PanelView: View {
 
     private func usageBar(title: String, window: String, percent: Int,
                           resetsAt: Date?, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        // A green bar at 100% says "fine" right under a row saying the limit
+        // hit. Escalate instead: identity colour, then orange, then red.
+        let barColor = percent >= 100 ? Color.red : (percent >= 90 ? .orange : color)
+        return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Text(title)
                     .font(.system(size: 11, weight: .medium))
@@ -254,13 +257,13 @@ struct PanelView: View {
                 }
                 Text("\(percent)%")
                     .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(color)
+                    .foregroundStyle(barColor)
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.12))
                     Capsule()
-                        .fill(color)
+                        .fill(barColor)
                         .frame(width: max(6, geometry.size.width * CGFloat(percent) / 100))
                 }
             }
@@ -389,6 +392,7 @@ struct PanelView: View {
             return "Paused for current work"
         }
         if power.claims.total > 0 { return "\(power.claims.label) working" }
+        if power.limitNotice != nil { return "Waiting out the usage limit" }
         // Derived from idleSince and the panel's own clock, so it counts down
         // every second instead of jumping at whatever cadence refresh() runs.
         if power.sleepDisabled, let since = power.idleSince {
