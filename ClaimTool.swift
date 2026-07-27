@@ -10,7 +10,8 @@ import Foundation
 struct ClaimTool {
     static func main() {
         let action = CommandLine.arguments.dropFirst().first ?? "acquire"
-        let payload = readPayload()
+        let raw = readRawPayload()
+        let payload = (try? JSONSerialization.jsonObject(with: raw) as? [String: Any]) ?? [:]
 
         let event = payload["hook_event_name"] as? String ?? "manual"
         let cwd = payload["cwd"] as? String ?? "?"
@@ -31,15 +32,45 @@ struct ClaimTool {
                 isAgent: isAgent,
                 ownerPID: owningProcess(),
                 note: "\(event) \(cwd)")
+            // Fresh work proves any recorded usage limit no longer binds.
+            ClaimStore.clearLimit()
         case "refresh":
             ClaimStore.refresh(sessionID: sessionID)
         case "release":
             ClaimStore.release(sessionID: sessionID)
+            // A turn that ends in failure fires StopFailure, not Stop. When
+            // the failure is a usage limit, the whole account is blocked, so
+            // record it and sweep every claim. Sniffed only on StopFailure:
+            // a successful turn's payload can quote limit phrases innocently
+            // (a conversation about limits, say) without any limit being hit.
+            if event == "StopFailure" || event == "SubagentStop" {
+                sniffUsageLimit(in: raw)
+            }
         default:
             break
         }
 
         exit(0)
+    }
+
+    private static func sniffUsageLimit(in raw: Data) {
+        guard let text = String(data: raw, encoding: .utf8) else { return }
+        let lowered = text.lowercased()
+        let phrases = ["hit your session limit", "hit your usage limit",
+                       "usage limit reached", "hit your weekly limit"]
+        guard phrases.contains(where: lowered.contains) else { return }
+
+        // Pull the human "resets 3am (Europe/Prague)" fragment if present.
+        var detail = "resets soon"
+        if let range = lowered.range(of: "resets") {
+            let tail = text[range.lowerBound...]
+            let fragment = tail.prefix { !"\"\\\n".contains($0) }.prefix(48)
+            let cleaned = fragment
+                .replacingOccurrences(of: "\\u{2022}", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if cleaned.count > 6 { detail = cleaned }
+        }
+        ClaimStore.recordLimit(detail: detail)
     }
 
     /// The claude process this hook belongs to, so the app can prune the claim
@@ -82,11 +113,10 @@ struct ClaimTool {
     }
 
     /// Hooks always pipe JSON in, but never block if run by hand with no stdin.
-    private static func readPayload() -> [String: Any] {
+    private static func readRawPayload() -> Data {
         guard isatty(FileHandle.standardInput.fileDescriptor) == 0,
-              let data = try? FileHandle.standardInput.readToEnd(),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [:] }
-        return object
+              let data = try? FileHandle.standardInput.readToEnd()
+        else { return Data() }
+        return data
     }
 }

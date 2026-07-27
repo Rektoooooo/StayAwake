@@ -123,6 +123,10 @@ struct PanelView: View {
             separator
             batteryGuardRow
             separator
+            if let notice = power.limitNotice {
+                limitRow(notice)
+                separator
+            }
             statusRow
             separator
             recent
@@ -203,6 +207,30 @@ struct PanelView: View {
 
     private var separator: some View {
         Divider().padding(.horizontal, 16)
+    }
+
+    /// Shown while a Claude usage limit is in force. Claims were swept when it
+    /// hit, so without this row the panel would just say "Idle" and leave the
+    /// user wondering why nothing is working.
+    private func limitRow(_ notice: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "hourglass")
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Claude usage limit hit")
+                    .font(.system(size: 12))
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
     }
 
     private var autoRow: some View {

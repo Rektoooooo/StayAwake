@@ -47,6 +47,10 @@ final class PowerController: ObservableObject {
     /// When the last working claim disappeared. The panel derives the live
     /// countdown from this; refresh() releases once it exceeds the grace.
     @Published private(set) var idleSince: Date?
+    /// "resets 3am (Europe/Prague)" while a Claude usage limit is in force.
+    /// Written by the hook helper when a turn dies on the limit; cleared the
+    /// moment fresh work proves the limit lifted.
+    @Published private(set) var limitNotice: String?
     /// When the poll loop last completed. Surfaced in the panel so a stalled
     /// loop shows as a warning rather than quietly serving stale readings,
     /// which is how a frozen battery percentage once drained the machine.
@@ -210,6 +214,11 @@ final class PowerController: ObservableObject {
         #endif
         readState()
         claims = ClaimStore.counts()
+        let notice = ClaimStore.limitNotice()
+        if notice != limitNotice {
+            if let notice { log(.limit, notice) }
+            limitNotice = notice
+        }
         lastRefresh = Date()
         heartbeat()
         // The guard outranks both auto mode and a manual hold: it is the one

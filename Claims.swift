@@ -62,6 +62,42 @@ enum ClaimStore {
         try? FileManager.default.removeItem(at: url(for: sessionID))
     }
 
+    // MARK: - Usage limits
+
+    private static var limitURL: URL {
+        directory.deletingLastPathComponent().appendingPathComponent("limit")
+    }
+
+    /// A usage limit is account-wide: when one session hits it, nothing can
+    /// work, so every claim on the machine is stale. Record the notice and
+    /// sweep them all rather than letting sleep stay held for work that
+    /// cannot happen.
+    static func recordLimit(detail: String) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? Data(detail.utf8).write(to: limitURL)
+        let manager = FileManager.default
+        (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil,
+                                          options: [.skipsHiddenFiles]))?
+            .forEach { try? manager.removeItem(at: $0) }
+    }
+
+    /// Fresh work proves the limit no longer binds.
+    static func clearLimit() {
+        try? FileManager.default.removeItem(at: limitURL)
+    }
+
+    /// The recorded notice, e.g. "resets 3am (Europe/Prague)", while current.
+    /// Limits reset within 5 hours, so anything older is stale.
+    static func limitNotice(maxAge: TimeInterval = 6 * 3600) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: limitURL.path),
+              let modified = attributes[.modificationDate] as? Date,
+              Date().timeIntervalSince(modified) < maxAge,
+              let text = try? String(contentsOf: limitURL, encoding: .utf8)
+        else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// What is working right now. Sweeps dead and expired claims as it goes:
     /// a claim whose owning process is gone is removed immediately, which is
     /// what keeps the count honest after a Ctrl+C'd or crashed session that

@@ -107,6 +107,7 @@ enum Setup {
         ("SubagentStart", "acquire"),      // background agent started
         ("PostToolUse", "acquire"),        // still working, keeps the claim young
         ("Stop", "release"),               // turn finished
+        ("StopFailure", "release"),        // turn DIED (API error, usage limit)
         ("SubagentStop", "release"),       // background agent finished
         ("SessionEnd", "release"),         // session gone
     ]

@@ -7,13 +7,14 @@ import Foundation
 // until after the fact.
 struct ActivityEntry: Codable, Identifiable {
     enum Kind: String, Codable {
-        case held, released, slept
+        case held, released, slept, limit
 
         var symbol: String {
             switch self {
             case .held: return "lock.fill"
             case .released: return "lock.open"
             case .slept: return "moon.fill"
+            case .limit: return "hourglass"
             }
         }
 
@@ -22,6 +23,7 @@ struct ActivityEntry: Codable, Identifiable {
             case .held: return "Held"
             case .released: return "Released"
             case .slept: return "Slept"
+            case .limit: return "Limit hit"
             }
         }
     }

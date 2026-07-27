@@ -35,6 +35,7 @@ things. StayAwake installs Claude Code hooks instead:
 | `SubagentStart` | acquire | background agent started |
 | `PostToolUse` | acquire | still working, keeps the claim young |
 | `Stop` | release | turn finished |
+| `StopFailure` | release | turn died: API error, usage limit |
 | `SubagentStop` | release | background agent finished |
 | `SessionEnd` | release | session gone |
 
@@ -90,6 +91,13 @@ prevent, so quitting turns it back off.
 **Recent activity.** The panel lists the last hold, release and sleep events
 with times and reasons, so "did it actually work while I was away?" is a glance
 rather than an archaeology session in `pmset -g log`.
+
+**Usage limits.** A Claude usage limit is account-wide: when one session hits
+it, nothing can work, so holding the Mac awake for it is pure battery drain.
+When a turn dies on the limit, StayAwake sweeps every claim and the panel shows
+"Claude usage limit hit · resets 3am" until fresh work proves the limit lifted.
+Detection is deliberately conservative: only a failed turn triggers it, so a
+conversation that merely mentions limits cannot.
 
 **An honest status row.** Battery, power source and the sleep flag are read
 in-process from IOKit, the same sources the menu bar battery flyout uses, and
