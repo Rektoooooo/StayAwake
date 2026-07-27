@@ -51,6 +51,9 @@ final class PowerController: ObservableObject {
     /// Written by the hook helper when a turn dies on the limit; cleared the
     /// moment fresh work proves the limit lifted.
     @Published private(set) var limitNotice: String?
+    /// 5h/7d usage percentages tapped from the statusline stream, nil when no
+    /// statusline feed exists (no wrap installed, or no session rendered yet).
+    @Published private(set) var usage: UsageLimits?
     /// When the poll loop last completed. Surfaced in the panel so a stalled
     /// loop shows as a warning rather than quietly serving stale readings,
     /// which is how a frozen battery percentage once drained the machine.
@@ -218,6 +221,13 @@ final class PowerController: ObservableObject {
         if notice != limitNotice {
             if let notice { log(.limit, notice) }
             limitNotice = notice
+        }
+        // Keep the previous reading through a mid-write parse failure; drop it
+        // only once it is genuinely old (feed gone, e.g. wrap removed).
+        if let fresh = UsageStore.read() {
+            usage = fresh
+        } else if let current = usage, Date().timeIntervalSince(current.asOf) > 24 * 3600 {
+            usage = nil
         }
         lastRefresh = Date()
         heartbeat()

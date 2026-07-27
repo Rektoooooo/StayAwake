@@ -6,7 +6,7 @@
 
 **Keep your Mac awake with the lid closed, automatically, only while Claude Code is actually working.**
 
-<img src="docs/panel.png" width="330" alt="The StayAwake panel: awake, following Claude Code, with 1 session and 12 agents working">
+<img src="docs/panel.png" width="330" alt="The StayAwake panel: following Claude Code with 1 session and 5 agents working, live 5h and 7d usage bars with reset countdowns">
 
 </div>
 
@@ -98,6 +98,14 @@ When a turn dies on the limit, StayAwake sweeps every claim and the panel shows
 "Claude usage limit hit · resets 3am" until fresh work proves the limit lifted.
 Detection is deliberately conservative: only a failed turn triggers it, so a
 conversation that merely mentions limits cannot.
+
+**Live usage bars.** The panel shows the 5-hour and 7-day windows as Claude
+Code itself reports them, with live reset countdowns. These percentages ride
+the statusline stream and exist nowhere else — no hook carries them — so setup
+wraps your statusline command with a `tee` that copies each payload to a file
+on its way through. Your statusline sees the same input and renders the same
+output; StayAwake reads the copy. Only installed when you already have a
+statusline configured, and the section hides itself when there is no feed.
 
 **An honest status row.** Battery, power source and the sleep flag are read
 in-process from IOKit, the same sources the menu bar battery flyout uses, and

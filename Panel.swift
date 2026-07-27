@@ -129,6 +129,10 @@ struct PanelView: View {
             }
             statusRow
             separator
+            if let usage = power.usage {
+                usageSection(usage)
+                separator
+            }
             recent
             separator
             loginRow
@@ -207,6 +211,73 @@ struct PanelView: View {
 
     private var separator: some View {
         Divider().padding(.horizontal, 16)
+    }
+
+    /// The 5h and 7d windows as Claude Code reports them, tapped from the
+    /// statusline stream. Colours match the claude-hud bars people already
+    /// read these numbers from: green for the session window, purple weekly.
+    private static let fiveHourColor = Color(red: 0.42, green: 0.85, blue: 0.30)
+    private static let sevenDayColor = Color(red: 0.64, green: 0.13, blue: 0.94)
+
+    private func usageSection(_ usage: UsageLimits) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("USAGE LIMITS")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            if let percent = usage.fiveHour {
+                usageBar(title: "Session", window: "5h", percent: percent,
+                         resetsAt: usage.fiveHourResetsAt, color: Self.fiveHourColor)
+            }
+            if let percent = usage.sevenDay {
+                usageBar(title: "Weekly", window: "7d", percent: percent,
+                         resetsAt: usage.sevenDayResetsAt, color: Self.sevenDayColor)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+    }
+
+    private func usageBar(title: String, window: String, percent: Int,
+                          resetsAt: Date?, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                Text(window)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 8)
+                if let resetsAt, let countdown = resetsIn(resetsAt) {
+                    Text(countdown)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Text("\(percent)%")
+                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(color)
+            }
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                    Capsule()
+                        .fill(color)
+                        .frame(width: max(6, geometry.size.width * CGFloat(percent) / 100))
+                }
+            }
+            .frame(height: 5)
+        }
+    }
+
+    /// "resets in 4h 21m" style, live because it derives from the panel clock.
+    private func resetsIn(_ date: Date) -> String? {
+        let seconds = Int(date.timeIntervalSince(tick))
+        guard seconds > 0 else { return nil }
+        let days = seconds / 86400
+        let hours = (seconds % 86400) / 3600
+        let minutes = (seconds % 3600) / 60
+        if days > 0 { return "resets in \(days)d \(hours)h" }
+        if hours > 0 { return "resets in \(hours)h \(minutes)m" }
+        return "resets in \(minutes)m"
     }
 
     /// Shown while a Claude usage limit is in force. Claims were swept when it

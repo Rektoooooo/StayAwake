@@ -186,6 +186,19 @@ enum Setup {
         }
         settings["hooks"] = hooks
 
+        // Usage percentages ride the statusline stream and nowhere else, so
+        // tap it: prepend a tee that copies each payload to a file on its way
+        // into whatever statusline the user already runs. Only when one is
+        // configured — installing a statusline they didn't have would change
+        // their UI, so without one the usage section simply stays hidden.
+        if var statusline = settings["statusLine"] as? [String: Any],
+           statusline["type"] as? String == "command",
+           let command = statusline["command"] as? String,
+           !command.contains("StayAwake/statusline.json") {
+            statusline["command"] = UsageStore.teePrefix + command
+            settings["statusLine"] = statusline
+        }
+
         guard let data = try? JSONSerialization.data(
             withJSONObject: settings, options: [.prettyPrinted, .withoutEscapingSlashes, .sortedKeys])
         else { return "Could not encode settings.json" }
