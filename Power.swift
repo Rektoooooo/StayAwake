@@ -217,17 +217,26 @@ final class PowerController: ObservableObject {
         #endif
         readState()
         claims = ClaimStore.counts()
-        let notice = ClaimStore.limitNotice()
-        if notice != limitNotice {
-            if let notice { log(.limit, notice) }
-            limitNotice = notice
-        }
         // Keep the previous reading through a mid-write parse failure; drop it
         // only once it is genuinely old (feed gone, e.g. wrap removed).
         if let fresh = UsageStore.read() {
             usage = fresh
         } else if let current = usage, Date().timeIntervalSince(current.asOf) > 24 * 3600 {
             usage = nil
+        }
+        // The limit row must not outlive the limit. When every window sits
+        // below 100 (including a clamped-to-0 window whose reset passed), the
+        // limit no longer binds; waiting for the next acquire to clear it
+        // would leave a stale "limit hit" showing between reset and the next
+        // prompt.
+        if limitNotice != nil, let usage,
+           (usage.fiveHour ?? 0) < 100, (usage.sevenDay ?? 0) < 100 {
+            ClaimStore.clearLimit()
+        }
+        let notice = ClaimStore.limitNotice()
+        if notice != limitNotice {
+            if let notice { log(.limit, notice) }
+            limitNotice = notice
         }
         lastRefresh = Date()
         heartbeat()

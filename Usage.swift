@@ -52,14 +52,26 @@ enum UsageStore {
             return Date(timeIntervalSince1970: epoch.doubleValue)
         }
 
-        let fiveHour = percent("five_hour")
-        let sevenDay = percent("seven_day")
+        // A window whose reset time has passed reports an obsolete percentage:
+        // the last render predates the reset, and after a limit hit nothing
+        // renders to overwrite it, so the file would show a red 100% for a
+        // window that already emptied. The payload carries the proof of its
+        // own staleness, so clamp to 0 until fresh work re-renders the truth.
+        func window(_ key: String) -> (percent: Int, resetsAt: Date?)? {
+            guard let value = percent(key) else { return nil }
+            let reset = resetsAt(key)
+            if let reset, reset <= Date() { return (0, nil) }
+            return (value, reset)
+        }
+
+        let fiveHour = window("five_hour")
+        let sevenDay = window("seven_day")
         guard fiveHour != nil || sevenDay != nil else { return nil }
         return UsageLimits(
-            fiveHour: fiveHour,
-            sevenDay: sevenDay,
-            fiveHourResetsAt: resetsAt("five_hour"),
-            sevenDayResetsAt: resetsAt("seven_day"),
+            fiveHour: fiveHour?.percent,
+            sevenDay: sevenDay?.percent,
+            fiveHourResetsAt: fiveHour?.resetsAt,
+            sevenDayResetsAt: sevenDay?.resetsAt,
             asOf: modified)
     }
 }
