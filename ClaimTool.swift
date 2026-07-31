@@ -92,8 +92,13 @@ struct ClaimTool {
             if Date() >= hardStop { return }   // something is wrong; fail open
             sleep(20)
         }
-        FileHandle.standardError.write(Data(
-            "The usage limit has reset. Continue the interrupted task, picking up exactly where you left off.".utf8))
+        // The user's custom continue prompt from Settings, or the default.
+        let custom = (CFPreferencesCopyAppValue("resumePrompt" as CFString, appID) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let message = custom.isEmpty
+            ? "The usage limit has reset. Continue the interrupted task, picking up exactly where you left off."
+            : custom
+        FileHandle.standardError.write(Data(message.utf8))
         exit(2)
     }
 

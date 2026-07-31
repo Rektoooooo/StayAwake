@@ -99,6 +99,18 @@ When a turn dies on the limit, StayAwake sweeps every claim and the panel shows
 Detection is deliberately conservative: only a failed turn triggers it, so a
 conversation that merely mentions limits cannot.
 
+**Resume after limit (optional).** The killer move: with "Resume after limit"
+on, hitting a usage limit no longer ends your working day. The hook that
+caught the failure releases its claim (so the Mac may sleep), then waits out
+the reset inside the hook; StayAwake schedules a hardware RTC wake for the
+reset time. When it fires, the hook un-fails the session and it continues
+**in your own terminal, visibly, in the same conversation**. Sessions that
+cannot continue in place (closed terminal, weekly limits beyond the wait cap)
+are resumed headlessly with `claude --resume` instead — never both, and the
+continuation's own hooks hold the Mac awake until the work finishes. Off by
+default: resumed sessions run unattended with acceptEdits permissions
+(configurable in Settings).
+
 **Live usage bars.** The panel shows the 5-hour and 7-day windows as Claude
 Code itself reports them, with live reset countdowns. These percentages ride
 the statusline stream and exist nowhere else — no hook carries them — so setup
@@ -118,12 +130,22 @@ numbers.
 
 ## Settings
 
+Settings… in the panel opens a sidebar-style window: **General** (launch at
+login, grace period, battery guard threshold, panel options), **Auto-resume**
+(permissions for resumed sessions, the in-terminal wait cap, a custom continue
+prompt), **Setup**, and **About**. Everything applies live — the app reads
+these keys on every use, so there is no Save and no restart.
+
+Every setting is also scriptable, same keys, same domain:
+
 ```sh
-defaults write cz.sebastiankucera.stayawake graceSeconds 120     # default 300
-defaults write cz.sebastiankucera.stayawake batteryThreshold 30  # default 20
+defaults write cz.sebastiankucera.stayawake graceSeconds 120         # default 300
+defaults write cz.sebastiankucera.stayawake batteryThreshold 30      # default 20
+defaults write cz.sebastiankucera.stayawake resumePermissionMode bypassPermissions
+defaults write cz.sebastiankucera.stayawake resumeWaitCapHours 4     # default 6
+defaults write cz.sebastiankucera.stayawake resumePrompt "..."       # continue prompt
+defaults write cz.sebastiankucera.stayawake showUsageLimits -bool false
 defaults write cz.sebastiankucera.stayawake debugHeartbeat -bool true
-# heartbeat: touches ~/Library/Application Support/StayAwake/heartbeat on every
-# poll, so a stalled loop is observable from outside the app
 ```
 
 ## Things worth knowing
@@ -181,7 +203,10 @@ No Xcode project: a handful of Swift files compiled with `swiftc` into a bundle.
 |---|---|
 | `StayAwake.swift` | app entry: `NSStatusItem`, the popover, app delegate |
 | `Panel.swift` | the dropdown panel |
-| `SetupView.swift` | onboarding window |
+| `SettingsView.swift` | the settings window: sidebar, tabs, About |
+| `SettingsWindow.swift` | settings window host |
+| `SetupView.swift` | onboarding, embedded as the Setup tab |
+| `Resume.swift` | auto-resume state shared by app and helper |
 | `Setup.swift` | sudoers rule and hook installation |
 | `Icon.swift` | menu bar art loading |
 | `Power.swift` | `pmset` state, auto mode, battery guard, IOKit reads |

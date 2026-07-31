@@ -478,8 +478,7 @@ final class PowerController: ObservableObject {
 
         // The app's own environment has no claude on PATH; a login shell does.
         for session in sessions where !session.id.isEmpty {
-            let prompt = "You were interrupted by a Claude usage limit that has now reset. "
-                + "Continue the task you were working on, picking up exactly where you left off."
+            let prompt = Self.resumePrompt
             let log = ResumeStore.logURL(for: session.id).path
             let script = "cd \(quoted(session.cwd)) && exec claude --resume \(quoted(session.id)) "
                 + "-p \(quoted(prompt)) --permission-mode \(quoted(resumePermissionMode)) "
@@ -498,6 +497,18 @@ final class PowerController: ObservableObject {
     /// `defaults write cz.sebastiankucera.stayawake resumePermissionMode bypassPermissions`.
     private var resumePermissionMode: String {
         UserDefaults.standard.string(forKey: "resumePermissionMode") ?? "acceptEdits"
+    }
+
+    static let defaultResumePrompt =
+        "You were interrupted by a Claude usage limit that has now reset. "
+        + "Continue the task you were working on, picking up exactly where you left off."
+
+    /// The user's custom continue prompt from Settings, or the default. Used
+    /// by both continuation paths, headless here and in-terminal in the hook.
+    static var resumePrompt: String {
+        let custom = UserDefaults.standard.string(forKey: "resumePrompt")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return custom.isEmpty ? defaultResumePrompt : custom
     }
 
     private func quoted(_ value: String) -> String {

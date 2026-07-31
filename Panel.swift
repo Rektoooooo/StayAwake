@@ -92,11 +92,10 @@ struct MenuRow<Label: View>: View {
 struct PanelView: View {
     @ObservedObject var power: PowerController
 
-    @State private var loginEnabled = LoginItem.isEnabled
-    @State private var loginError: String?
     /// Captured when the panel opens. Setup.isComplete spawns a subprocess,
     /// which must never happen inside a render pass.
     @State private var setupComplete = true
+    @AppStorage("showUsageLimits") private var showUsageLimits = true
 
     /// Re-evaluates the body while the panel is on screen.
     ///
@@ -131,23 +130,21 @@ struct PanelView: View {
             }
             statusRow
             separator
-            if let usage = power.usage {
+            if let usage = power.usage, showUsageLimits {
                 usageSection(usage)
                 separator
             }
             recent
             separator
-            loginRow
-            separator
             MenuRow {
-                SetupWindow.shared.show()
+                SettingsWindow.shared.show(tab: setupComplete ? .general : .setup)
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: setupComplete
-                          ? "checkmark.circle" : "exclamationmark.circle.fill")
+                          ? "gearshape" : "exclamationmark.circle.fill")
                         .foregroundStyle(setupComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
                         .frame(width: 14)
-                    Text(setupComplete ? "Setup" : "Finish setup")
+                    Text(setupComplete ? "Settings…" : "Finish setup")
                         .font(.system(size: 12))
                     Spacer(minLength: 0)
                 }
@@ -175,7 +172,6 @@ struct PanelView: View {
         .onAppear {
             power.refresh()
             power.recheckPasswordless()
-            loginEnabled = LoginItem.isEnabled
             DispatchQueue.global().async {
                 let complete = Setup.isComplete
                 DispatchQueue.main.async { setupComplete = complete }
@@ -348,18 +344,6 @@ struct PanelView: View {
             caption: guardCaption,
             captionTint: guardTripped ? .orange : .secondary,
             isOn: Binding(get: { power.batteryGuard }, set: { power.batteryGuard = $0 }))
-    }
-
-    private var loginRow: some View {
-        SettingRow(
-            symbol: "arrow.up.forward.app",
-            tint: .secondary,
-            title: "Launch at login",
-            caption: loginError ?? (loginEnabled ? "On" : "Off, won't survive a restart"),
-            captionTint: loginEnabled && loginError == nil ? .secondary : .orange,
-            isOn: Binding(
-                get: { loginEnabled },
-                set: { loginError = LoginItem.set($0); loginEnabled = LoginItem.isEnabled }))
     }
 
     private var recent: some View {

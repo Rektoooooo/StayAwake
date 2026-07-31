@@ -9,11 +9,16 @@ struct SetupView: View {
     @State private var busy: Setup.Step?
 
     var onFinish: () -> Void
+    /// Inside the settings window the content pane provides the header, so
+    /// the big standalone one would be a double title.
+    var embedded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
+            if !embedded {
+                header
+                Divider()
+            }
 
             VStack(spacing: 0) {
                 ForEach(Array(Setup.Step.allCases.enumerated()), id: \.element.id) { index, step in
@@ -25,7 +30,7 @@ struct SetupView: View {
             Divider()
             footer
         }
-        .frame(width: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear(perform: refresh)
     }
 
@@ -150,45 +155,11 @@ struct SetupView: View {
                 // window behind whatever is frontmost. It never closed; it was
                 // buried, which reads exactly like "the setup closed on me".
                 // Re-front it so the user sees the step complete.
-                SetupWindow.shared.show()
+                SettingsWindow.shared.show(tab: .setup)
             }
         }
     }
 }
 
-/// Plain AppKit window: an LSUIElement app has no normal window plumbing, and
-/// this needs to open on demand from the menu bar and on first run.
-@MainActor
-final class SetupWindow: NSObject, NSWindowDelegate {
-    static let shared = SetupWindow()
-    private var window: NSWindow?
-
-    func show() {
-        if let window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 400),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false)
-        window.title = "StayAwake"
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.contentView = NSHostingView(rootView: SetupView(onFinish: { [weak self] in
-            self?.window?.close()
-        }))
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        self.window = window
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        NSLog("Setup window closing; call stack: %@", Thread.callStackSymbols.prefix(8).joined(separator: " | "))
-        window = nil
-    }
-}
+// The window that used to live here is gone: SetupView now embeds as the
+// Setup tab of SettingsWindow.

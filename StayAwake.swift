@@ -45,10 +45,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.statusItem.button?.image = StatusIcon.image(on: on)
             }
 
+        SettingsWindow.shared.configure(power: power)
+
         // First run, or a run where setup is still incomplete: offer to finish
         // it rather than silently doing nothing useful.
         if !Setup.isComplete {
-            SetupWindow.shared.show()
+            SettingsWindow.shared.show(tab: .setup)
         }
     }
 
