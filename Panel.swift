@@ -121,6 +121,8 @@ struct PanelView: View {
             separator
             autoRow
             separator
+            autoResumeRow
+            separator
             batteryGuardRow
             separator
             if let notice = power.limitNotice {
@@ -315,6 +317,27 @@ struct PanelView: View {
             caption: autoCaption,
             captionTint: power.autoMode && !power.passwordless ? .orange : .secondary,
             isOn: Binding(get: { power.autoMode }, set: { power.autoMode = $0 }))
+    }
+
+    private var autoResumeRow: some View {
+        SettingRow(
+            symbol: "clock.arrow.circlepath",
+            tint: power.pendingResume != nil ? .orange : .secondary,
+            title: "Resume after limit",
+            caption: autoResumeCaption,
+            captionTint: power.pendingResume != nil ? .orange : .secondary,
+            isOn: Binding(get: { power.autoResume }, set: { power.autoResume = $0 }))
+    }
+
+    private var autoResumeCaption: String {
+        guard power.autoResume else { return "Off" }
+        if let pending = power.pendingResume {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            let count = pending.sessions.count
+            return "\(count) session\(count == 1 ? "" : "s") at \(formatter.string(from: pending.fireAt))"
+        }
+        return "Wakes the Mac, continues the work"
     }
 
     private var batteryGuardRow: some View {

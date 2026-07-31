@@ -44,7 +44,12 @@ struct ClaimTool {
             // a successful turn's payload can quote limit phrases innocently
             // (a conversation about limits, say) without any limit being hit.
             if event == "StopFailure" || event == "SubagentStop" {
-                sniffUsageLimit(in: raw)
+                if sniffUsageLimit(in: raw), event == "StopFailure", !isAgent {
+                    // Never returns if it decides to wait: exits 2 after the
+                    // reset, which un-fails this very session in its own
+                    // terminal instead of resuming it headlessly elsewhere.
+                    waitForResetAndContinue()
+                }
             }
         default:
             break
@@ -53,12 +58,52 @@ struct ClaimTool {
         exit(0)
     }
 
-    private static func sniffUsageLimit(in raw: Data) {
-        guard let text = String(data: raw, encoding: .utf8) else { return }
+    /// The in-terminal resume. A Stop-family hook that exits 2 blocks the stop
+    /// and the session continues in place, so: release the claim (already
+    /// done, the Mac may sleep), wait inside the hook until the limit resets,
+    /// then exit 2 with the continue instruction. The clock check is wall
+    /// time, so a sleeping Mac that gets its scheduled RTC wake sails through.
+    private static func waitForResetAndContinue() {
+        let appID = "cz.sebastiankucera.stayawake" as CFString
+        guard CFPreferencesCopyAppValue("autoResume" as CFString, appID) as? Bool == true
+        else { return }
+        // Waiting out a 5h window in a hook is fine; camping five days on a
+        // weekly reset is not. Beyond the cap the scheduled-wake + headless
+        // path handles it.
+        let capHours = CFPreferencesCopyAppValue("resumeWaitCapHours" as CFString, appID) as? Double ?? 6
+        let reset: Date
+        if let override = ProcessInfo.processInfo.environment["STAYAWAKE_TEST_RESET_IN"],
+           let seconds = Double(override) {
+            // Test hook: the real statusline file is overwritten by live
+            // renders within milliseconds, so fabricated resets lose the race.
+            reset = Date().addingTimeInterval(seconds)
+        } else {
+            guard let usage = UsageStore.read(),
+                  let real = [usage.fiveHourResetsAt, usage.sevenDayResetsAt].compactMap({ $0 }).min(),
+                  real.timeIntervalSinceNow > 0,
+                  real.timeIntervalSinceNow <= capHours * 3600
+            else { return }
+            reset = real
+        }
+
+        let deadline = reset.addingTimeInterval(15)
+        let hardStop = Date().addingTimeInterval(capHours * 3600 + 1800)
+        while Date() < deadline {
+            if Date() >= hardStop { return }   // something is wrong; fail open
+            sleep(20)
+        }
+        FileHandle.standardError.write(Data(
+            "The usage limit has reset. Continue the interrupted task, picking up exactly where you left off.".utf8))
+        exit(2)
+    }
+
+    @discardableResult
+    private static func sniffUsageLimit(in raw: Data) -> Bool {
+        guard let text = String(data: raw, encoding: .utf8) else { return false }
         let lowered = text.lowercased()
         let phrases = ["hit your session limit", "hit your usage limit",
                        "usage limit reached", "hit your weekly limit"]
-        guard phrases.contains(where: lowered.contains) else { return }
+        guard phrases.contains(where: lowered.contains) else { return false }
 
         // Pull the human "resets 3am (Europe/Prague)" fragment if present.
         var detail = "resets soon"
@@ -71,6 +116,7 @@ struct ClaimTool {
             if cleaned.count > 6 { detail = cleaned }
         }
         ClaimStore.recordLimit(detail: detail)
+        return true
     }
 
     /// The claude process this hook belongs to, so the app can prune the claim

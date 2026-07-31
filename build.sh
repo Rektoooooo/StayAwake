@@ -17,11 +17,11 @@ cp Assets/*.png Assets/AppIcon.icns "$APP/Contents/Resources/"
 
 # The menu bar app.
 swiftc -O -parse-as-library -o "$APP/Contents/MacOS/StayAwake" \
-	Icon.swift Claims.swift Usage.swift Activity.swift Login.swift Setup.swift Power.swift Panel.swift SetupView.swift StayAwake.swift
+	Icon.swift Claims.swift Usage.swift Resume.swift Activity.swift Login.swift Setup.swift Power.swift Panel.swift SetupView.swift StayAwake.swift
 
 # The hook helper Claude Code invokes. Shares ClaimStore with the app.
 swiftc -O -parse-as-library -o "$APP/Contents/MacOS/stayawake-claim" \
-	Claims.swift ClaimTool.swift
+	Claims.swift Usage.swift ClaimTool.swift
 
 IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
 	| grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')}"

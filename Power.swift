@@ -54,6 +54,19 @@ final class PowerController: ObservableObject {
     /// 5h/7d usage percentages tapped from the statusline stream, nil when no
     /// statusline feed exists (no wrap installed, or no session rendered yet).
     @Published private(set) var usage: UsageLimits?
+    /// A scheduled wake-and-resume, surviving sleep and app restarts on disk.
+    @Published private(set) var pendingResume: PendingResume? = ResumeStore.load()
+
+    /// Opt-in: wake the Mac when a usage limit resets and re-prompt the
+    /// interrupted sessions headlessly. Off by default, because it runs
+    /// `claude` unattended with acceptEdits permissions.
+    @Published var autoResume: Bool = UserDefaults.standard.bool(forKey: autoResumeKey) {
+        didSet {
+            UserDefaults.standard.set(autoResume, forKey: Self.autoResumeKey)
+            if !autoResume { cancelPendingResume(reason: "turned off") }
+            refresh()
+        }
+    }
     /// When the poll loop last completed. Surfaced in the panel so a stalled
     /// loop shows as a warning rather than quietly serving stale readings,
     /// which is how a frozen battery percentage once drained the machine.
@@ -91,6 +104,9 @@ final class PowerController: ObservableObject {
 
     private static let autoModeKey = "autoMode"
     private static let batteryGuardKey = "batteryGuard"
+    private static let autoResumeKey = "autoResume"
+    /// Keeps spawned resume processes from being reaped mid-run.
+    private var resumeProcesses: [Process] = []
     private var ticker: DispatchSourceTimer?
     private var claimWatcher: DispatchSourceFileSystemObject?
     private var powerSourceWatcher: CFRunLoopSource?
@@ -197,8 +213,9 @@ final class PowerController: ObservableObject {
     }
 
     private static func checkPasswordless() -> Bool {
-        // -l asks "may I?" without running anything and without prompting.
-        Shell.run("/usr/bin/sudo", ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", "1"]).status == 0
+        // Parse the NOPASSWD listing; `sudo -l <command>` reports what an
+        // admin could do with a password, not what runs without one.
+        Shell.run("/usr/bin/sudo", ["-n", "-l"]).out.contains("disablesleep")
     }
 
     /// The launch-time check goes stale the moment setup installs the sudoers
@@ -238,6 +255,7 @@ final class PowerController: ObservableObject {
             if let notice { log(.limit, notice) }
             limitNotice = notice
         }
+        manageAutoResume()
         lastRefresh = Date()
         heartbeat()
         // The guard outranks both auto mode and a manual hold: it is the one
@@ -372,6 +390,132 @@ final class PowerController: ObservableObject {
             apply(false, reason: "idle \(quiet)")
             sleepNowIfShut()
         }
+    }
+
+    // MARK: - Auto-resume
+
+    /// The full loop: limit hits -> schedule an RTC wake for the reset ->
+    /// Mac sleeps -> wakes -> the interrupted sessions are re-prompted
+    /// headlessly -> their own hooks hold the Mac awake until they finish ->
+    /// normal grace puts it back to sleep.
+    private func manageAutoResume() {
+        guard autoResume else { return }
+
+        if let pending = pendingResume {
+            // Fired? (didWake or the ticker gets us here; a closed-lid wake
+            // may be a dark wake, which caffeinate -u promotes to a real one.)
+            if Date() >= pending.fireAt {
+                fire(pending)
+                return
+            }
+            // The user resumed by hand before the reset: work is running, the
+            // limit is gone, our scheduled continuation would only duplicate
+            // their prompt.
+            if limitNotice == nil && claims.total > 0 {
+                cancelPendingResume(reason: "resumed by hand")
+            }
+            return
+        }
+
+        // A limit is in force and nothing is scheduled yet: schedule.
+        guard limitNotice != nil else { return }
+        let interrupted = ClaimStore.resumeManifest()
+        guard !interrupted.isEmpty else { return }
+        // Whichever full window binds; its reset is when work becomes possible.
+        let resets = [usage?.fiveHourResetsAt, usage?.sevenDayResetsAt]
+            .compactMap { $0 }.filter { $0 > Date() }
+        guard let reset = resets.min() else { return }
+
+        let fireAt = reset.addingTimeInterval(90)   // a beat after the window opens
+        let wakeDate = ResumeStore.wakeDateString(fireAt)
+        let scheduled = Shell.run("/usr/bin/sudo",
+            ["-n", "/usr/bin/pmset", "schedule", "wake", wakeDate]).status == 0
+        if !scheduled {
+            // Without the wake the resume still fires if the Mac happens to be
+            // awake at reset time; say so rather than silently degrading.
+            log(.resume, "wake schedule failed, redo Setup")
+        }
+        let pending = PendingResume(
+            fireAt: fireAt,
+            wakeDate: scheduled ? wakeDate : "",
+            sessions: interrupted.map { ResumeSession(id: $0["id"] ?? "", cwd: $0["cwd"] ?? "") })
+        ResumeStore.save(pending)
+        pendingResume = pending
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        log(.resume, "scheduled \(formatter.string(from: fireAt)), \(pending.sessions.count) session\(pending.sessions.count == 1 ? "" : "s")")
+    }
+
+    private func fire(_ pending: PendingResume) {
+        clearPendingResume()
+        ClaimStore.clearLimit()
+
+        // A scheduled wake on a shut lid can be a dark wake; simulated user
+        // activity promotes it. Then hold sleep so the gap before the resumed
+        // sessions' own claims arrive cannot put the Mac back down.
+        Shell.run("/usr/bin/caffeinate", ["-u", "-t", "5"])
+        apply(true, reason: "auto-resume")
+
+        // The interrupted sessions' own StopFailure hooks have been waiting
+        // out the reset and are un-failing them in their own terminals right
+        // now — that is the preferred path, visible where the user works.
+        // Give it a beat; only if no session comes back does the headless
+        // fallback fire, so nothing is ever continued twice.
+        log(.resume, "waiting for sessions to continue in place")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 150) { [weak self] in
+            guard let self else { return }
+            ClaimStore.clearResumeManifest()
+            if self.claims.total > 0 {
+                self.log(.resume, "continued in the terminal")
+            } else {
+                self.spawnHeadless(pending.sessions)
+            }
+        }
+    }
+
+    private func spawnHeadless(_ sessions: [ResumeSession]) {
+        log(.resume, "resuming \(sessions.count) session\(sessions.count == 1 ? "" : "s") headless")
+
+        // The app's own environment has no claude on PATH; a login shell does.
+        for session in sessions where !session.id.isEmpty {
+            let prompt = "You were interrupted by a Claude usage limit that has now reset. "
+                + "Continue the task you were working on, picking up exactly where you left off."
+            let log = ResumeStore.logURL(for: session.id).path
+            let script = "cd \(quoted(session.cwd)) && exec claude --resume \(quoted(session.id)) "
+                + "-p \(quoted(prompt)) --permission-mode \(quoted(resumePermissionMode)) "
+                + ">> \(quoted(log)) 2>&1"
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-lc", script]
+            try? process.run()
+            resumeProcesses.append(process)
+        }
+        resumeProcesses.removeAll { !$0.isRunning }
+    }
+
+    /// acceptEdits by default: file edits proceed, anything heavier is denied
+    /// rather than silently allowed. Override with
+    /// `defaults write cz.sebastiankucera.stayawake resumePermissionMode bypassPermissions`.
+    private var resumePermissionMode: String {
+        UserDefaults.standard.string(forKey: "resumePermissionMode") ?? "acceptEdits"
+    }
+
+    private func quoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func cancelPendingResume(reason: String) {
+        guard let pending = pendingResume else { return }
+        if !pending.wakeDate.isEmpty {
+            Shell.run("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "schedule", "cancel", "wake", pending.wakeDate])
+        }
+        clearPendingResume()
+        log(.resume, "cancelled, \(reason)")
+    }
+
+    private func clearPendingResume() {
+        ResumeStore.clear()
+        pendingResume = nil
     }
 
     /// Clearing the flag is not enough to put a lid-shut Mac to sleep. Clamshell

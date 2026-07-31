@@ -62,7 +62,11 @@ enum Setup {
     // MARK: - Privileged sleep control
 
     static func sudoersInstalled() -> Bool {
-        Shell.run("/usr/bin/sudo", ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", "1"]).status == 0
+        // Parse the actual NOPASSWD grants. `sudo -l <command>` is a trap: it
+        // answers "could this user run it with a password", which for an admin
+        // is yes for everything, so it reports grants that do not exist.
+        let listing = Shell.run("/usr/bin/sudo", ["-n", "-l"]).out
+        return listing.contains("disablesleep") && listing.contains("pmset schedule wake")
     }
 
     private static func installSudoers() -> String? {
@@ -72,7 +76,9 @@ enum Setup {
               user.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil
         else { return "Unexpected user name, install the rule by hand" }
 
-        let rule = "\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0"
+        // disablesleep drives the lid-close flag; schedule wake/cancel lets
+        // auto-resume wake the Mac when a usage limit resets. Nothing else.
+        let rule = "\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset schedule wake *, /usr/bin/pmset schedule cancel *"
         // Staged inside /etc/sudoers.d, which only root can write, so nothing
         // can swap the file between validation and install. The leading dot
         // keeps sudo from reading the file while it is still a draft.
@@ -102,14 +108,18 @@ enum Setup {
 
     // MARK: - Claude Code hooks
 
-    private static let wiring: [(event: String, action: String)] = [
-        ("UserPromptSubmit", "acquire"),   // a turn started
-        ("SubagentStart", "acquire"),      // background agent started
-        ("PostToolUse", "acquire"),        // still working, keeps the claim young
-        ("Stop", "release"),               // turn finished
-        ("StopFailure", "release"),        // turn DIED (API error, usage limit)
-        ("SubagentStop", "release"),       // background agent finished
-        ("SessionEnd", "release"),         // session gone
+    /// The StopFailure timeout is the auto-resume feature: on a usage limit
+    /// the hook waits out the reset inside the hook (up to 6h) and then
+    /// un-fails the session in its own terminal. The default 600s timeout
+    /// would kill the wait.
+    private static let wiring: [(event: String, action: String, timeout: Int?)] = [
+        ("UserPromptSubmit", "acquire", nil),   // a turn started
+        ("SubagentStart", "acquire", nil),      // background agent started
+        ("PostToolUse", "acquire", nil),        // still working, keeps the claim young
+        ("Stop", "release", nil),               // turn finished
+        ("StopFailure", "release", 23400),      // turn DIED (API error, usage limit)
+        ("SubagentStop", "release", nil),       // background agent finished
+        ("SessionEnd", "release", nil),         // session gone
     ]
 
     static var claudeDirectory: URL {
@@ -178,10 +188,9 @@ enum Setup {
         for entry in wiring {
             var groups = hooks[entry.event] as? [[String: Any]] ?? []
             groups = strippingOurs(from: groups)
-            groups.append([
-                "matcher": "*",
-                "hooks": [["type": "command", "command": command(for: entry.action)]],
-            ])
+            var hook: [String: Any] = ["type": "command", "command": command(for: entry.action)]
+            if let timeout = entry.timeout { hook["timeout"] = timeout }
+            groups.append(["matcher": "*", "hooks": [hook]])
             hooks[entry.event] = groups
         }
         settings["hooks"] = hooks

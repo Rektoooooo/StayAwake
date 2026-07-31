@@ -68,17 +68,55 @@ enum ClaimStore {
         directory.deletingLastPathComponent().appendingPathComponent("limit")
     }
 
+    private static var manifestURL: URL {
+        directory.deletingLastPathComponent().appendingPathComponent("resume-manifest.json")
+    }
+
     /// A usage limit is account-wide: when one session hits it, nothing can
     /// work, so every claim on the machine is stale. Record the notice and
     /// sweep them all rather than letting sleep stay held for work that
-    /// cannot happen.
+    /// cannot happen. The swept sessions are written to a manifest first, so
+    /// auto-resume knows exactly which sessions were interrupted and where.
     static func recordLimit(detail: String) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? Data(detail.utf8).write(to: limitURL)
+
         let manager = FileManager.default
-        (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil,
-                                          options: [.skipsHiddenFiles]))?
-            .forEach { try? manager.removeItem(at: $0) }
+        let entries = (try? manager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+
+        // Main sessions only: an agent cannot be resumed, its session can.
+        var sessions: [[String: String]] = []
+        for entry in entries {
+            guard let body = try? String(contentsOf: entry, encoding: .utf8) else { continue }
+            let lines = body.split(separator: "\n").map(String.init)
+            guard lines.contains("kind=session") else { continue }
+            // The note line is "<event> <cwd>"; cwd is everything after the event.
+            let cwd = lines.last.flatMap { line -> String? in
+                guard let space = line.firstIndex(of: " ") else { return nil }
+                return String(line[line.index(after: space)...])
+            } ?? ""
+            sessions.append(["id": entry.lastPathComponent, "cwd": cwd])
+        }
+        // A second limit hit sweeps an already-empty directory; never clobber
+        // the manifest that the first hit captured.
+        if !sessions.isEmpty, let data = try? JSONSerialization.data(withJSONObject: sessions) {
+            try? data.write(to: manifestURL)
+        }
+
+        entries.forEach { try? manager.removeItem(at: $0) }
+    }
+
+    /// The sessions interrupted by the last limit hit: [{id, cwd}].
+    static func resumeManifest() -> [[String: String]] {
+        guard let data = try? Data(contentsOf: manifestURL),
+              let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: String]]
+        else { return [] }
+        return sessions
+    }
+
+    static func clearResumeManifest() {
+        try? FileManager.default.removeItem(at: manifestURL)
     }
 
     /// Fresh work proves the limit no longer binds.
