@@ -40,16 +40,16 @@ struct ClaimTool {
             ClaimStore.release(sessionID: sessionID)
             // A turn that ends in failure fires StopFailure, not Stop. When
             // the failure is a usage limit, the whole account is blocked, so
-            // record it and sweep every claim. Sniffed only on StopFailure:
-            // a successful turn's payload can quote limit phrases innocently
+            // record it and sweep every claim. Only on StopFailure: a
+            // successful turn's payload can quote limit phrases innocently
             // (a conversation about limits, say) without any limit being hit.
-            if event == "StopFailure" || event == "SubagentStop" {
-                if sniffUsageLimit(in: raw), event == "StopFailure", !isAgent {
-                    // Never returns if it decides to wait: exits 2 after the
-                    // reset, which un-fails this very session in its own
-                    // terminal instead of resuming it headlessly elsewhere.
-                    waitForResetAndContinue()
-                }
+            //
+            // Nothing else to do here. Claude Code continues the session by
+            // itself when the limit resets; the app's job is to have the Mac
+            // awake for that, and a StopFailure hook cannot block or continue
+            // anything anyway (its exit code is ignored).
+            if event == "StopFailure", !isAgent {
+                recordUsageLimit(payload: payload, raw: raw)
             }
         default:
             break
@@ -58,57 +58,16 @@ struct ClaimTool {
         exit(0)
     }
 
-    /// The in-terminal resume. A Stop-family hook that exits 2 blocks the stop
-    /// and the session continues in place, so: release the claim (already
-    /// done, the Mac may sleep), wait inside the hook until the limit resets,
-    /// then exit 2 with the continue instruction. The clock check is wall
-    /// time, so a sleeping Mac that gets its scheduled RTC wake sails through.
-    private static func waitForResetAndContinue() {
-        let appID = "cz.sebastiankucera.stayawake" as CFString
-        guard CFPreferencesCopyAppValue("autoResume" as CFString, appID) as? Bool == true
-        else { return }
-        // Waiting out a 5h window in a hook is fine; camping five days on a
-        // weekly reset is not. Beyond the cap the scheduled-wake + headless
-        // path handles it.
-        let capHours = CFPreferencesCopyAppValue("resumeWaitCapHours" as CFString, appID) as? Double ?? 6
-        let reset: Date
-        if let override = ProcessInfo.processInfo.environment["STAYAWAKE_TEST_RESET_IN"],
-           let seconds = Double(override) {
-            // Test hook: the real statusline file is overwritten by live
-            // renders within milliseconds, so fabricated resets lose the race.
-            reset = Date().addingTimeInterval(seconds)
-        } else {
-            guard let usage = UsageStore.read(),
-                  let real = [usage.fiveHourResetsAt, usage.sevenDayResetsAt].compactMap({ $0 }).min(),
-                  real.timeIntervalSinceNow > 0,
-                  real.timeIntervalSinceNow <= capHours * 3600
-            else { return }
-            reset = real
-        }
-
-        let deadline = reset.addingTimeInterval(15)
-        let hardStop = Date().addingTimeInterval(capHours * 3600 + 1800)
-        while Date() < deadline {
-            if Date() >= hardStop { return }   // something is wrong; fail open
-            sleep(20)
-        }
-        // The user's custom continue prompt from Settings, or the default.
-        let custom = (CFPreferencesCopyAppValue("resumePrompt" as CFString, appID) as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let message = custom.isEmpty
-            ? "The usage limit has reset. Continue the interrupted task, picking up exactly where you left off."
-            : custom
-        FileHandle.standardError.write(Data(message.utf8))
-        exit(2)
-    }
-
-    @discardableResult
-    private static func sniffUsageLimit(in raw: Data) -> Bool {
-        guard let text = String(data: raw, encoding: .utf8) else { return false }
+    /// Claude Code types the failure (`error: "rate_limit"`) since the hook
+    /// grew its error-type matcher; older builds only carried the message, so
+    /// the phrase sniff stays as the fallback.
+    private static func recordUsageLimit(payload: [String: Any], raw: Data) {
+        let text = String(data: raw, encoding: .utf8) ?? ""
         let lowered = text.lowercased()
         let phrases = ["hit your session limit", "hit your usage limit",
                        "usage limit reached", "hit your weekly limit"]
-        guard phrases.contains(where: lowered.contains) else { return false }
+        let typed = payload["error"] as? String == "rate_limit"
+        guard typed || phrases.contains(where: lowered.contains) else { return }
 
         // Pull the human "resets 3am (Europe/Prague)" fragment if present.
         var detail = "resets soon"
@@ -121,7 +80,6 @@ struct ClaimTool {
             if cleaned.count > 6 { detail = cleaned }
         }
         ClaimStore.recordLimit(detail: detail)
-        return true
     }
 
     /// The claude process this hook belongs to, so the app can prune the claim

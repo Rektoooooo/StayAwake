@@ -85,6 +85,17 @@ Claude is working, and sleeps the Mac if the lid is shut. It outranks both auto
 mode and a manual hold, because it is the one rule that protects the machine
 from the app. Toggleable.
 
+**Thermal guard.** A lid-shut Mac with a build running has nowhere to put the
+heat. StayAwake watches macOS's own thermal pressure (nominal, fair, serious,
+critical: the signal the system throttles on) and at *serious* hands sleep
+back even while Claude is working, sleeping the Mac if the lid is shut, exactly
+like the battery guard. The panel row shows the hottest CPU sensor, read from
+the SMC, next to the pressure level. In Settings the trigger can be raised to
+*critical*, or set as a fixed temperature of that sensor (70–105 °C, holding
+again only once it has cooled 5° below the limit). The pressure levels are
+what macOS itself throttles on, so they stay the default; a fixed temperature
+is stricter but chip-specific. Toggleable.
+
 **Quit restores sleep.** Leaving the flag set is the failure this app exists to
 prevent, so quitting turns it back off.
 
@@ -99,17 +110,20 @@ When a turn dies on the limit, StayAwake sweeps every claim and the panel shows
 Detection is deliberately conservative: only a failed turn triggers it, so a
 conversation that merely mentions limits cannot.
 
-**Resume after limit (optional).** The killer move: with "Resume after limit"
-on, hitting a usage limit no longer ends your working day. The hook that
-caught the failure releases its claim (so the Mac may sleep), then waits out
-the reset inside the hook; StayAwake schedules a hardware RTC wake for the
-reset time. When it fires, the hook un-fails the session and it continues
-**in your own terminal, visibly, in the same conversation**. Sessions that
-cannot continue in place (closed terminal, weekly limits beyond the wait cap)
-are resumed headlessly with `claude --resume` instead — never both, and the
-continuation's own hooks hold the Mac awake until the work finishes. Off by
-default: resumed sessions run unattended with acceptEdits permissions
-(configurable in Settings).
+**Resume after limit (optional).** Claude Code continues an interrupted
+session by itself when the limit resets (its "Continue automatically at usage
+limit" setting, on by default since 2.1.234), but only if it is awake to see
+the reset: it queues the continuation 30–90 seconds after the reset, and a
+process that wakes from a long sleep to find that moment already past parks
+the session on "press enter to continue" instead. So with "Resume after limit"
+on, StayAwake schedules a hardware RTC wake **3 minutes before** the reset and
+holds sleep off for 15 minutes so the continuation can get going. From there
+auto mode takes over: the continued work's own hooks hold the Mac awake until
+it finishes, then the usual grace hands sleep back. StayAwake resumes and
+re-prompts nothing itself, so nothing runs unattended that Claude Code would
+not have run anyway. Off by default, because it schedules hardware wakes. The
+panel warns when Claude Code's own auto-continue or Follow Claude Code is off,
+since the wake serves nothing without them.
 
 **Live usage bars.** The panel shows the 5-hour and 7-day windows as Claude
 Code itself reports them, with live reset countdowns. These percentages ride
@@ -131,9 +145,8 @@ numbers.
 ## Settings
 
 Settings… in the panel opens a sidebar-style window: **General** (launch at
-login, grace period, battery guard threshold, panel options), **Auto-resume**
-(permissions for resumed sessions, the in-terminal wait cap, a custom continue
-prompt), **Setup**, and **About**. Everything applies live — the app reads
+login, grace period, battery and thermal guard thresholds, panel options),
+**Auto-resume** (the wake, and what it relies on), **Setup**, and **About**. Everything applies live — the app reads
 these keys on every use, so there is no Save and no restart.
 
 Every setting is also scriptable, same keys, same domain:
@@ -141,9 +154,9 @@ Every setting is also scriptable, same keys, same domain:
 ```sh
 defaults write cz.sebastiankucera.stayawake graceSeconds 120         # default 300
 defaults write cz.sebastiankucera.stayawake batteryThreshold 30      # default 20
-defaults write cz.sebastiankucera.stayawake resumePermissionMode bypassPermissions
-defaults write cz.sebastiankucera.stayawake resumeWaitCapHours 4     # default 6
-defaults write cz.sebastiankucera.stayawake resumePrompt "..."       # continue prompt
+defaults write cz.sebastiankucera.stayawake thermalGuard -bool false
+defaults write cz.sebastiankucera.stayawake thermalTrigger critical  # serious (default), critical, temperature
+defaults write cz.sebastiankucera.stayawake thermalTemperature 90    # °C, used with thermalTrigger temperature; default 95
 defaults write cz.sebastiankucera.stayawake showUsageLimits -bool false
 defaults write cz.sebastiankucera.stayawake debugHeartbeat -bool true
 ```
@@ -206,10 +219,11 @@ No Xcode project: a handful of Swift files compiled with `swiftc` into a bundle.
 | `SettingsView.swift` | the settings window: sidebar, tabs, About |
 | `SettingsWindow.swift` | settings window host |
 | `SetupView.swift` | onboarding, embedded as the Setup tab |
-| `Resume.swift` | auto-resume state shared by app and helper |
+| `Resume.swift` | auto-resume's pending wake, persisted across sleep |
 | `Setup.swift` | sudoers rule and hook installation |
 | `Icon.swift` | menu bar art loading |
-| `Power.swift` | `pmset` state, auto mode, battery guard, IOKit reads |
+| `Power.swift` | `pmset` state, auto mode, guards, auto-resume, IOKit reads |
+| `Thermal.swift` | thermal pressure labels and the SMC temperature reader |
 | `Claims.swift` | claim store shared by app and hook helper |
 | `ClaimTool.swift` | `stayawake-claim`, invoked by hooks |
 | `Activity.swift` | the recent-events log |
@@ -233,7 +247,11 @@ sits above its neighbours.
 ### Testing
 
 `STAYAWAKE_CLAUDE_DIR` points the hook writing at a scratch copy of
-`settings.json` instead of your live one.
+`settings.json` instead of your live one. `STAYAWAKE_SUPPORT_DIR` does the
+same for the claim store, so `stayawake-claim` can be fed synthetic hook
+payloads without sweeping the live claims (setting `HOME` is not enough;
+Foundation resolves Application Support from the account, not the
+environment).
 
 ## License
 

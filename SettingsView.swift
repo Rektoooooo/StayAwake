@@ -20,7 +20,7 @@ struct SettingsView: View {
             Divider()
             content
         }
-        .frame(width: 680, height: 584)
+        .frame(width: 680, height: 790)
     }
 
     // MARK: Sidebar
@@ -191,11 +191,24 @@ private struct GeneralTab: View {
 
     @AppStorage("graceSeconds") private var graceSeconds: Double = 300
     @AppStorage("batteryThreshold") private var batteryThreshold = 20
+    @AppStorage("thermalTrigger") private var thermalTrigger = "serious"
+    @AppStorage("thermalTemperature") private var thermalTemperature = 95
     @AppStorage("showUsageLimits") private var showUsageLimits = true
     @AppStorage("debugHeartbeat") private var debugHeartbeat = false
 
     @State private var loginEnabled = false
     @State private var loginError: String?
+
+    private var thermalTriggerCaption: String {
+        switch thermalTrigger {
+        case "critical":
+            return "Critical pressure: the machine must cool down now. Serious pressure is tolerated."
+        case "temperature":
+            return "A fixed reading of the hottest CPU sensor: stricter than the pressure levels macOS throttles on, and chip-specific."
+        default:
+            return "Serious pressure as macOS reports it: fans flat out, performance cut. Applies even while Claude works."
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -227,7 +240,7 @@ private struct GeneralTab: View {
                 }
             }
 
-            SectionHeader("Battery")
+            SectionHeader("Guards")
             Card {
                 CardRow(title: "Battery guard") {
                     RowToggle(isOn: Binding(
@@ -247,6 +260,43 @@ private struct GeneralTab: View {
                             Text("\(batteryThreshold)%")
                                 .font(.system(size: 12).monospacedDigit())
                                 .frame(width: 32, alignment: .trailing)
+                        }
+                    }
+                }
+                CardDivider()
+                CardRow(title: "Thermal guard") {
+                    RowToggle(isOn: Binding(
+                        get: { power.thermalGuard },
+                        set: { power.thermalGuard = $0 }))
+                }
+                if power.thermalGuard {
+                    CardDivider()
+                    CardRow(title: "Release at", caption: thermalTriggerCaption) {
+                        Picker("", selection: $thermalTrigger) {
+                            Text("Serious").tag("serious")
+                            Text("Critical").tag("critical")
+                            Text("Temperature").tag("temperature")
+                        }
+                        .labelsHidden()
+                        .frame(width: 128)
+                    }
+                    if thermalTrigger == "temperature" {
+                        CardDivider()
+                        CardRow(title: "Release above",
+                                caption: power.cpuTemperature.map {
+                                    "Hottest CPU sensor, now \($0)°. Holds again once it has cooled \(PowerController.temperatureHysteresis)° below the limit."
+                                } ?? "No CPU sensor is readable on this Mac, so the serious pressure level applies instead.",
+                                captionTint: power.cpuTemperature == nil ? .orange : .secondary) {
+                            HStack(spacing: 8) {
+                                Slider(value: Binding(
+                                    get: { Double(thermalTemperature) },
+                                    set: { thermalTemperature = Int($0) }
+                                ), in: 70...105, step: 5)
+                                .frame(width: 150)
+                                Text("\(thermalTemperature)°")
+                                    .font(.system(size: 12).monospacedDigit())
+                                    .frame(width: 32, alignment: .trailing)
+                            }
                         }
                     }
                 }
@@ -279,15 +329,11 @@ private struct GeneralTab: View {
 private struct ResumeTab: View {
     @ObservedObject var power: PowerController
 
-    @AppStorage("resumePermissionMode") private var permissionMode = "acceptEdits"
-    @AppStorage("resumeWaitCapHours") private var waitCapHours: Double = 6
-    @AppStorage("resumePrompt") private var resumePrompt = ""
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Card {
                 CardRow(title: "Resume after limit",
-                        caption: "When a usage limit stops work, wake the Mac at the reset and continue the interrupted sessions.") {
+                        caption: "When a usage limit stops work, wake the Mac before the reset so Claude Code's own continuation lands on an awake machine.") {
                     RowToggle(isOn: Binding(
                         get: { power.autoResume },
                         set: { power.autoResume = $0 }))
@@ -295,59 +341,45 @@ private struct ResumeTab: View {
             }
 
             if power.autoResume {
-                SectionHeader("Behaviour")
+                SectionHeader("How it works")
                 Card {
-                    CardRow(title: "Resumed sessions may",
-                            caption: permissionMode == "bypassPermissions"
-                                ? "Unattended shell access. Only for tasks you would trust a cron job with."
-                                : "File edits proceed; commands needing approval are denied, so some tasks finish only partially.",
-                            captionTint: permissionMode == "bypassPermissions" ? .orange : .secondary) {
-                        Picker("", selection: $permissionMode) {
-                            Text("Edit files only").tag("acceptEdits")
-                            Text("Do everything").tag("bypassPermissions")
-                        }
-                        .labelsHidden()
-                        .frame(width: 140)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Claude Code continues an interrupted session by itself when the limit resets (its “Continue automatically at usage limit” setting, on by default), but only if it is awake to see the reset. A Mac that sleeps through it wakes to a “press enter to continue” prompt instead.")
+                        Text("StayAwake schedules a hardware wake \(Int(PowerController.wakeLead / 60)) minutes before the reset and holds sleep off for \(Int(PowerController.resumeHold / 60)) minutes so the continuation can get going. From there Follow Claude Code takes over: the continued work holds the Mac awake until it finishes, then the usual grace hands sleep back.")
                     }
-                    CardDivider()
-                    CardRow(title: "Wait in the terminal up to",
-                            caption: "Session limits continue visibly in your terminal. Beyond the cap (weekly limits), the work resumes in the background instead.") {
-                        HStack(spacing: 6) {
-                            Text("\(Int(waitCapHours))h")
-                                .font(.system(size: 12).monospacedDigit())
-                            Stepper("", value: $waitCapHours, in: 1...12, step: 1)
-                                .labelsHidden()
-                        }
-                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(12)
                 }
 
-                SectionHeader("Continue prompt")
-                Card {
-                    VStack(alignment: .leading, spacing: 6) {
-                        TextEditor(text: $resumePrompt)
-                            .font(.system(size: 12))
-                            .scrollContentBackground(.hidden)
-                            .frame(height: 56)
-                            .overlay(alignment: .topLeading) {
-                                if resumePrompt.isEmpty {
-                                    Text(PowerController.defaultResumePrompt)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.tertiary)
-                                        .padding(.leading, 5)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                        Text("Sent to each interrupted session when it continues. Leave empty for the default.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                if !power.autoMode || !power.claudeAutoContinue {
+                    SectionHeader("Needs attention")
+                    Card {
+                        if !power.autoMode {
+                            CardRow(title: "Follow Claude Code is off",
+                                    caption: "The wake relies on auto mode to hold sleep for the continuation and hand it back afterwards. Turn it on in the panel.",
+                                    captionTint: .orange) { EmptyView() }
+                        }
+                        if !power.autoMode && !power.claudeAutoContinue {
+                            CardDivider()
+                        }
+                        if !power.claudeAutoContinue {
+                            CardRow(title: "Claude Code's automatic continue is off",
+                                    caption: "Turn on “Continue automatically at usage limit” in Claude Code's /config, or the wake has nothing to serve.",
+                                    captionTint: .orange) { EmptyView() }
+                        }
                     }
-                    .padding(12)
                 }
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 22)
         .padding(.bottom, 16)
+        .onAppear {
+            // Reads a file off the main thread; never inside a render pass.
+            power.recheckSetup()
+        }
     }
 }
 

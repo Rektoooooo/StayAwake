@@ -108,18 +108,18 @@ enum Setup {
 
     // MARK: - Claude Code hooks
 
-    /// The StopFailure timeout is the auto-resume feature: on a usage limit
-    /// the hook waits out the reset inside the hook (up to 6h) and then
-    /// un-fails the session in its own terminal. The default 600s timeout
-    /// would kill the wait.
-    private static let wiring: [(event: String, action: String, timeout: Int?)] = [
-        ("UserPromptSubmit", "acquire", nil),   // a turn started
-        ("SubagentStart", "acquire", nil),      // background agent started
-        ("PostToolUse", "acquire", nil),        // still working, keeps the claim young
-        ("Stop", "release", nil),               // turn finished
-        ("StopFailure", "release", 23400),      // turn DIED (API error, usage limit)
-        ("SubagentStop", "release", nil),       // background agent finished
-        ("SessionEnd", "release", nil),         // session gone
+    /// Every hook returns at once. An earlier version parked the StopFailure
+    /// hook for hours to un-fail the session after a usage limit, which
+    /// Claude Code no longer honours (a StopFailure hook's exit code is
+    /// ignored) and no longer needs (it continues the session itself).
+    private static let wiring: [(event: String, action: String)] = [
+        ("UserPromptSubmit", "acquire"),   // a turn started
+        ("SubagentStart", "acquire"),      // background agent started
+        ("PostToolUse", "acquire"),        // still working, keeps the claim young
+        ("Stop", "release"),               // turn finished
+        ("StopFailure", "release"),        // turn DIED (API error, usage limit)
+        ("SubagentStop", "release"),       // background agent finished
+        ("SessionEnd", "release"),         // session gone
     ]
 
     static var claudeDirectory: URL {
@@ -159,7 +159,9 @@ enum Setup {
             guard let groups = hooks[entry.event] as? [[String: Any]] else { return false }
             return groups.contains { group in
                 (group["hooks"] as? [[String: Any]] ?? []).contains {
-                    ($0["command"] as? String) == command(for: entry.action)
+                    // No timeout: a hook from the parked-wait era carries a
+                    // 6.5h one, and re-running this step is what drops it.
+                    ($0["command"] as? String) == command(for: entry.action) && $0["timeout"] == nil
                 }
             }
         }
@@ -168,6 +170,13 @@ enum Setup {
     private static func readSettings() -> [String: Any]? {
         guard let data = try? Data(contentsOf: settingsURL) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// Claude Code's own "Continue automatically at usage limit" (2.1.234+),
+    /// a user-settings key that is on when absent. Auto-resume's wake serves
+    /// that continuation, so the app warns when it has been turned off.
+    static func claudeAutoContinueEnabled() -> Bool {
+        readSettings()?["autoContinueAtUsageLimit"] as? Bool ?? true
     }
 
     private static func installHooks() -> String? {
@@ -188,8 +197,7 @@ enum Setup {
         for entry in wiring {
             var groups = hooks[entry.event] as? [[String: Any]] ?? []
             groups = strippingOurs(from: groups)
-            var hook: [String: Any] = ["type": "command", "command": command(for: entry.action)]
-            if let timeout = entry.timeout { hook["timeout"] = timeout }
+            let hook: [String: Any] = ["type": "command", "command": command(for: entry.action)]
             groups.append(["matcher": "*", "hooks": [hook]])
             hooks[entry.event] = groups
         }

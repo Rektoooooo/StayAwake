@@ -15,13 +15,19 @@ cp Info.plist "$APP/Contents/Info.plist"
 # Menu bar art. Regenerate from the masters with tools/make-icons.py.
 cp Assets/*.png Assets/AppIcon.icns "$APP/Contents/Resources/"
 
+# Deployment target pinned to LSMinimumSystemVersion. Left unpinned, swiftc
+# stamps the binary with the SDK's own version, and LaunchServices refuses to
+# launch an executable whose minimum OS is newer than the running one
+# (error -10825), which is exactly what a beta SDK produces.
+TARGET="arm64-apple-macos13.0"
+
 # The menu bar app.
-swiftc -O -parse-as-library -o "$APP/Contents/MacOS/StayAwake" \
-	Icon.swift Claims.swift Usage.swift Resume.swift Activity.swift Login.swift Setup.swift Power.swift Panel.swift SetupView.swift SettingsWindow.swift SettingsView.swift StayAwake.swift
+swiftc -O -target "$TARGET" -parse-as-library -o "$APP/Contents/MacOS/StayAwake" \
+	Icon.swift Claims.swift Usage.swift Resume.swift Activity.swift Login.swift Setup.swift Thermal.swift Power.swift Panel.swift SetupView.swift SettingsWindow.swift SettingsView.swift StayAwake.swift
 
 # The hook helper Claude Code invokes. Shares ClaimStore with the app.
-swiftc -O -parse-as-library -o "$APP/Contents/MacOS/stayawake-claim" \
-	Claims.swift Usage.swift ClaimTool.swift
+swiftc -O -target "$TARGET" -parse-as-library -o "$APP/Contents/MacOS/stayawake-claim" \
+	Claims.swift ClaimTool.swift
 
 IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
 	| grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')}"

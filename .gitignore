@@ -3,3 +3,6 @@ StayAwake.app/
 *.dmg
 
 .DS_Store
+
+# Working notes
+tasks/

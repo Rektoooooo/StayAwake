@@ -124,6 +124,8 @@ struct PanelView: View {
             separator
             batteryGuardRow
             separator
+            thermalGuardRow
+            separator
             if let notice = power.limitNotice {
                 limitRow(notice)
                 separator
@@ -171,7 +173,7 @@ struct PanelView: View {
         .frame(width: 300)
         .onAppear {
             power.refresh()
-            power.recheckPasswordless()
+            power.recheckSetup()
             DispatchQueue.global().async {
                 let complete = Setup.isComplete
                 DispatchQueue.main.async { setupComplete = complete }
@@ -318,22 +320,34 @@ struct PanelView: View {
     private var autoResumeRow: some View {
         SettingRow(
             symbol: "clock.arrow.circlepath",
-            tint: power.pendingResume != nil ? .orange : .secondary,
+            tint: autoResumeBusy ? .orange : .secondary,
             title: "Resume after limit",
             caption: autoResumeCaption,
-            captionTint: power.pendingResume != nil ? .orange : .secondary,
+            captionTint: autoResumeBusy || autoResumeMisconfigured ? .orange : .secondary,
             isOn: Binding(get: { power.autoResume }, set: { power.autoResume = $0 }))
+    }
+
+    private var autoResumeBusy: Bool {
+        power.autoResume && (power.pendingResume != nil || power.resumeHoldActive)
+    }
+
+    /// The wake serves Claude Code's own continuation and auto mode's hold
+    /// and release around it; with either off it is a wake for nothing.
+    private var autoResumeMisconfigured: Bool {
+        power.autoResume && (!power.autoMode || !power.claudeAutoContinue)
     }
 
     private var autoResumeCaption: String {
         guard power.autoResume else { return "Off" }
+        if !power.autoMode { return "Needs Follow Claude Code" }
+        if !power.claudeAutoContinue { return "Claude Code's auto-continue is off" }
         if let pending = power.pendingResume {
             let formatter = DateFormatter()
             formatter.timeStyle = .short
-            let count = pending.sessions.count
-            return "\(count) session\(count == 1 ? "" : "s") at \(formatter.string(from: pending.fireAt))"
+            return "Wakes at \(formatter.string(from: pending.fireAt)) for the reset"
         }
-        return "Wakes the Mac, continues the work"
+        if power.resumeHoldActive { return "Awake, waiting for Claude Code" }
+        return "Wakes the Mac before the reset"
     }
 
     private var batteryGuardRow: some View {
@@ -344,6 +358,31 @@ struct PanelView: View {
             caption: guardCaption,
             captionTint: guardTripped ? .orange : .secondary,
             isOn: Binding(get: { power.batteryGuard }, set: { power.batteryGuard = $0 }))
+    }
+
+    private var thermalGuardRow: some View {
+        SettingRow(
+            symbol: power.thermalTripped ? "exclamationmark.triangle.fill" : "thermometer.medium",
+            tint: power.thermalTripped ? .orange : .secondary,
+            title: power.thermalTrigger == .temperature
+                ? "Release above \(power.thermalTemperature)°"
+                : "Release when overheating",
+            caption: thermalCaption,
+            captionTint: power.thermalTripped ? .orange : .secondary,
+            isOn: Binding(get: { power.thermalGuard }, set: { power.thermalGuard = $0 }))
+    }
+
+    /// The live reading rides here rather than in the status row: "CPU 61°,
+    /// pressure nominal" answers the question the guard exists for.
+    private var thermalCaption: String {
+        guard power.thermalGuard else { return "Off, can run hot" }
+        let reading = power.cpuTemperature.map { "CPU \($0)°" }
+        if power.thermalTripped {
+            return power.thermalTrigger == .temperature && reading != nil
+                ? "Holding off, \(reading!)"
+                : "Holding off, \(power.thermalState.label) thermal pressure"
+        }
+        return "\(reading.map { $0 + ", " } ?? "")pressure \(power.thermalState.label)"
     }
 
     private var recent: some View {
@@ -399,6 +438,7 @@ struct PanelView: View {
             return "Paused for current work"
         }
         if power.claims.total > 0 { return "\(power.claims.label) working" }
+        if power.resumeHoldActive { return "Holding for Claude Code to continue" }
         if power.limitNotice != nil { return "Waiting out the usage limit" }
         // Derived from idleSince and the panel's own clock, so it counts down
         // every second instead of jumping at whatever cadence refresh() runs.

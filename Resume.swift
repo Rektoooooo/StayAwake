@@ -1,21 +1,15 @@
 import Foundation
 
-// Auto-resume: when a usage limit stops work, wake the Mac at the reset and
-// re-prompt the interrupted sessions so the task finishes unattended.
+// Auto-resume: when a usage limit stops work, wake the Mac shortly before the
+// reset so Claude Code's own continuation lands on an awake machine.
 //
 // The pending state is a file, not memory: the whole point is surviving a
 // sleep, and possibly an app restart, between scheduling and firing.
 struct PendingResume: Codable {
     var fireAt: Date
     /// The exact date string given to `pmset schedule wake`, kept verbatim so
-    /// the schedule can be cancelled by matching it.
+    /// the schedule can be cancelled by matching it. Empty if scheduling failed.
     var wakeDate: String
-    var sessions: [ResumeSession]
-}
-
-struct ResumeSession: Codable {
-    var id: String
-    var cwd: String
 }
 
 enum ResumeStore {
@@ -46,12 +40,5 @@ enum ResumeStore {
         formatter.timeZone = .current
         formatter.dateFormat = "MM/dd/yy HH:mm:ss"
         return formatter.string(from: date)
-    }
-
-    /// Where each resumed session's output lands, for post-mortems.
-    static func logURL(for sessionID: String) -> URL {
-        let safe = sessionID.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" }
-        return ClaimStore.directory.deletingLastPathComponent()
-            .appendingPathComponent("resume-\(String(safe)).log")
     }
 }
